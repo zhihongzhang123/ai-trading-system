@@ -1,6 +1,6 @@
 /**
- * open-nof1.ai - AI 加密货币自动交易系统
- * Copyright (C) 2025 195440
+ * ai-trading-system - AI 加密货币自动交易系统
+ * Copyright (C) 2025 zhihongzhang123
  * 
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -94,16 +94,20 @@ export class OkxClient {
   }
 
   /**
-   * 发送 HTTP 请求
+   * 发送 HTTP 请求（带指数退避重试机制）
+   * @param method - HTTP 方法 (GET/POST)
+   * @param endpoint - API 路径
+   * @param params - 查询参数
+   * @param body - 请求体
+   * @param maxRetries - 最大重试次数，默认 3
    */
   private async request(
     method: string,
     endpoint: string,
     params?: Record<string, any>,
-    body?: Record<string, any>
+    body?: Record<string, any>,
+    maxRetries: number = 3
   ): Promise<any> {
-    const timestamp = new Date().toISOString();
-    
     // 构建查询字符串
     let queryString = "";
     if (params && Object.keys(params).length > 0) {
@@ -119,62 +123,77 @@ export class OkxClient {
     
     const requestPath = endpoint + queryString;
     const bodyStr = body ? JSON.stringify(body) : "";
-    const sign = this.sign(timestamp, method, requestPath, bodyStr);
-    
-    // 构建请求头
-    const headers: Record<string, string> = {
-      "OK-ACCESS-KEY": this.apiKey,
-      "OK-ACCESS-SIGN": sign,
-      "OK-ACCESS-TIMESTAMP": timestamp,
-      "OK-ACCESS-PASSPHRASE": this.passphrase,
-      "Content-Type": "application/json",
-    };
-    
-    // 测试网标识
-    if (this.isTestnet) {
-      headers["x-simulated-trading"] = "1";
-    }
-    
     const url = this.baseUrl + requestPath;
     
-    try {
-      const response = await fetch(url, {
-        method,
-        headers,
-        body: bodyStr || undefined,
-      });
+    // 指数退避重试逻辑
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      const timestamp = new Date().toISOString();
+      const sign = this.sign(timestamp, method, requestPath, bodyStr);
       
-      const data = await response.json();
+      const headers: Record<string, string> = {
+        "OK-ACCESS-KEY": this.apiKey,
+        "OK-ACCESS-SIGN": sign,
+        "OK-ACCESS-TIMESTAMP": timestamp,
+        "OK-ACCESS-PASSPHRASE": this.passphrase,
+        "Content-Type": "application/json",
+      };
       
-      // 记录详细的请求和响应信息（仅在出错时）
-      if (data.code !== "0") {
-        logger.error(`OKX API 错误响应: ${method} ${endpoint}`, {
-          requestBody: bodyStr ? JSON.parse(bodyStr) : undefined,
-          responseCode: data.code,
-          responseMsg: data.msg,
-          responseData: data.data,
-          httpStatus: response.status,
+      if (this.isTestnet) {
+        headers["x-simulated-trading"] = "1";
+      }
+      
+      try {
+        const response = await fetch(url, {
+          method,
+          headers,
+          body: bodyStr || undefined,
+          signal: AbortSignal.timeout(10000), // 10秒超时
         });
-      }
-      
-      // OKX API 返回格式: {code, msg, data}
-      if (data.code !== "0") {
-        // 如果有详细的错误数据，提取出来
-        let detailedError = data.msg;
-        if (data.data && Array.isArray(data.data) && data.data.length > 0) {
-          const firstError = data.data[0];
-          if (firstError.sMsg) {
-            detailedError = `${data.msg} - ${firstError.sMsg} (sCode: ${firstError.sCode})`;
+        
+        const data = await response.json();
+        
+        if (data.code !== "0") {
+          let detailedError = data.msg;
+          if (data.data && Array.isArray(data.data) && data.data.length > 0) {
+            const firstError = data.data[0];
+            if (firstError.sMsg) {
+              detailedError = `${data.msg} - ${firstError.sMsg} (sCode: ${firstError.sCode})`;
+            }
           }
+          // 业务错误不重试（除非是限流 50111/50112）
+          const isRateLimit = ["50111", "50112"].includes(data.code);
+          if (!isRateLimit || attempt >= maxRetries) {
+            logger.error(`OKX API 业务错误: ${method} ${endpoint}`, {
+              responseCode: data.code,
+              responseMsg: detailedError,
+            });
+            throw new Error(`OKX API Error: ${detailedError} (code: ${data.code})`);
+          }
+          // 限流错误进入重试
+          logger.warn(`OKX 限流 (${data.code})，等待重试 ${attempt + 1}/${maxRetries}...`);
+        } else {
+          return data.data;
         }
-        throw new Error(`OKX API Error: ${detailedError} (code: ${data.code})`);
+      } catch (error: any) {
+        if (error.name === "TimeoutError" || error.code === "ECONNRESET" || error.message?.includes("fetch")) {
+          if (attempt < maxRetries) {
+            logger.warn(`OKX 网络请求失败 (${error.message || error.name})，${attempt + 1}/${maxRetries} 次重试...`);
+          } else {
+            logger.error(`OKX 网络请求失败，已达最大重试次数: ${error.message || error.name}`);
+            throw error;
+          }
+        } else {
+          throw error;
+        }
       }
       
-      return data.data;
-    } catch (error: any) {
-      logger.error(`OKX API 请求失败: ${method} ${endpoint}`, error);
-      throw error;
+      // 指数退避：1s, 2s, 4s, 8s...
+      const delay = Math.min(1000 * Math.pow(2, attempt), 10000);
+      logger.debug(`等待 ${delay}ms 后重试...`);
+      await new Promise(resolve => setTimeout(resolve, delay));
     }
+    
+    throw new Error(`OKX API 请求失败，已达最大重试次数: ${method} ${endpoint}`);
   }
 
   /**

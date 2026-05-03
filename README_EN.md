@@ -1,4 +1,4 @@
-# open-nof1.ai
+# ai-trading-system
 
 > 📖 **Complete Documentation** | This is the full English documentation. For a quick overview, see the [main README](./README.md).
 
@@ -19,11 +19,11 @@
 
 ## Overview
 
-open-nof1.ai is an AI-powered cryptocurrency automated trading system that deeply integrates large language model intelligence with quantitative trading practices. Built on an Agent framework, the system achieves truly intelligent trading by granting AI complete autonomy in market analysis and trading decisions.
+ai-trading-system is an AI-powered cryptocurrency automated trading system that deeply integrates large language model intelligence with quantitative trading practices. Built on an Agent framework, the system achieves truly intelligent trading by granting AI complete autonomy in market analysis and trading decisions.
 
 The system follows a **minimal human intervention** design philosophy, abandoning traditional hardcoded trading rules and allowing AI models to autonomously learn and make decisions based on raw market data. It integrates with Gate.io exchange (supporting both testnet and mainnet), provides complete perpetual contract trading capabilities, covers mainstream cryptocurrencies such as BTC, ETH, SOL, and supports full automation from data collection, intelligent analysis, risk management to trade execution.
 
-![open-nof1.ai](./public/image.png)
+![ai-trading-system](./public/image.png)
 
 ## Table of Contents
 
@@ -557,7 +557,7 @@ npm run pm2:logs
 module.exports = {
   apps: [
     {
-      name: 'open-nof1.ai',
+      name: 'ai-trading-system',
       script: 'tsx',
       args: '--env-file=.env ./src',
       instances: 1,
@@ -579,24 +579,24 @@ module.exports = {
 
 ```bash
 # Build Docker image
-docker build -t open-nof1.ai:latest .
+docker build -t ai-trading-system:latest .
 
 # Run container
 docker run -d \
-  --name open-nof1.ai \
+  --name ai-trading-system \
   -p 3141:3141 \
   --env-file .env \
   --restart unless-stopped \
-  open-nof1.ai:latest
+  ai-trading-system:latest
 
 # View logs
-docker logs -f open-nof1.ai
+docker logs -f ai-trading-system
 
 # Stop container
-docker stop open-nof1.ai
+docker stop ai-trading-system
 
 # Remove container
-docker rm open-nof1.ai
+docker rm ai-trading-system
 ```
 
 **Docker Compose** (optional):
@@ -606,7 +606,7 @@ version: '3.8'
 services:
   trading:
     build: .
-    container_name: open-nof1.ai
+    container_name: ai-trading-system
     ports:
       - "3141:3141"
     env_file:
@@ -963,6 +963,6 @@ Your support is the driving force behind continuous improvement. Thank you!
 ---
 <div align="center">
 
-[![Star History Chart](https://api.star-history.com/svg?repos=195440/open-nof1.ai&type=Date)](https://star-history.com/#195440/open-nof1.ai&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=zhihongzhang123/ai-trading-system&type=Date)](https://star-history.com/#zhihongzhang123/ai-trading-system&Date)
 
 </div>

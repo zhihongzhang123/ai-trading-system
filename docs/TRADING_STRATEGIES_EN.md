@@ -1,6 +1,6 @@
 # Trading Strategy Configuration Guide
 
-This document provides detailed information on all trading strategies supported by the open-nof1.ai system and their configuration methods.
+This document provides detailed information on all trading strategies supported by the ai-trading-system system and their configuration methods.
 
 ## Quick Configuration Guide
 
@@ -694,8 +694,8 @@ GATE_USE_TESTNET=true                  # Use testnet
 
 If you have questions or suggestions, please contact through the following methods:
 
-- **GitHub Issues**: [https://github.com/195440/open-nof1.ai/issues](https://github.com/195440/open-nof1.ai/issues)
-- **Discussion Forum**: [https://github.com/195440/open-nof1.ai/discussions](https://github.com/195440/open-nof1.ai/discussions)
+- **GitHub Issues**: [https://github.com/zhihongzhang123/ai-trading-system/issues](https://github.com/zhihongzhang123/ai-trading-system/issues)
+- **Discussion Forum**: [https://github.com/zhihongzhang123/ai-trading-system/discussions](https://github.com/zhihongzhang123/ai-trading-system/discussions)
 
 ---
 
@@ -829,7 +829,7 @@ export function getStrategyParams(strategy: TradingStrategy, maxLeverage: number
 
 ## Copyright Notice
 
-Copyright (C) 2025 195440
+Copyright (C) 2025 zhihongzhang123
 
 This document is licensed under the GNU Affero General Public License v3.0.
 

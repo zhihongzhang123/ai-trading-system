@@ -22,6 +22,19 @@
 
 import "./proxySetup";
 import "dotenv/config";
+
+// ==================== 环境变量验证 ====================
+const requiredEnvVars = [
+  "OKX_API_KEY", "OKX_API_SECRET", "OKX_PASSPHRASE",
+  "DASHSCOPE_API_KEY", "AI_MODEL",
+];
+const missing = requiredEnvVars.filter(k => !process.env[k]);
+if (missing.length > 0) {
+  console.error(`❌ 缺少必要的环境变量: ${missing.join(", ")}`);
+  console.error("请复制 .env.example 为 .env 并填入您的配置。");
+  process.exit(1);
+}
+
 import { createLogger } from "./utils/loggerUtils";
 import { serve } from "@hono/node-server";
 import { createApiRoutes } from "./api/routes";

@@ -1,6 +1,6 @@
 # 取引戦略設定ガイド
 
-このドキュメントは、open-nof1.aiシステムがサポートするすべての取引戦略とその設定方法を詳しく説明します。
+このドキュメントは、ai-trading-systemシステムがサポートするすべての取引戦略とその設定方法を詳しく説明します。
 
 ## クイック設定ガイド
 
@@ -690,8 +690,8 @@ GATE_USE_TESTNET=true                  # テストネットを使用
 
 質問や提案がある場合は、以下の方法でお問い合わせください:
 
-- **GitHub Issues**: [https://github.com/195440/open-nof1.ai/issues](https://github.com/195440/open-nof1.ai/issues)
-- **ディスカッションフォーラム**: [https://github.com/195440/open-nof1.ai/discussions](https://github.com/195440/open-nof1.ai/discussions)
+- **GitHub Issues**: [https://github.com/zhihongzhang123/ai-trading-system/issues](https://github.com/zhihongzhang123/ai-trading-system/issues)
+- **ディスカッションフォーラム**: [https://github.com/zhihongzhang123/ai-trading-system/discussions](https://github.com/zhihongzhang123/ai-trading-system/discussions)
 
 ---
 
@@ -819,7 +819,7 @@ export function getStrategyParams(strategy: TradingStrategy, maxLeverage: number
 
 ## 著作権表示
 
-Copyright (C) 2025 195440
+Copyright (C) 2025 zhihongzhang123
 
 このドキュメントはGNU Affero General Public License v3.0ライセンスに従います。
 

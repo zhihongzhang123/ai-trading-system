@@ -1,6 +1,6 @@
 # 交易策略配置指南
 
-本文档详细说明 open-nof1.ai 系统支持的所有交易策略及其配置方法。
+本文档详细说明 ai-trading-system 系统支持的所有交易策略及其配置方法。
 
 ## 快速配置指南
 
@@ -1760,8 +1760,8 @@ GATE_USE_TESTNET=true                  # 使用测试网（推荐）
 
 如有问题或建议，请通过以下方式联系：
 
-- **GitHub Issues**: [https://github.com/195440/open-nof1.ai/issues](https://github.com/195440/open-nof1.ai/issues)
-- **讨论区**: [https://github.com/195440/open-nof1.ai/discussions](https://github.com/195440/open-nof1.ai/discussions)
+- **GitHub Issues**: [https://github.com/zhihongzhang123/ai-trading-system/issues](https://github.com/zhihongzhang123/ai-trading-system/issues)
+- **讨论区**: [https://github.com/zhihongzhang123/ai-trading-system/discussions](https://github.com/zhihongzhang123/ai-trading-system/discussions)
 
 ---
 
@@ -1944,6 +1944,6 @@ export function getStrategyParams(strategy: TradingStrategy, maxLeverage: number
 
 ## 版权声明
 
-Copyright (C) 2025 195440
+Copyright (C) 2025 zhihongzhang123
 
 本文档遵循 GNU Affero General Public License v3.0 协议。

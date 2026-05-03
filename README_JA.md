@@ -1,4 +1,4 @@
-# open-nof1.ai
+# ai-trading-system
 
 > 📖 **完全なドキュメント** | これは完全な日本語ドキュメントです。クイックスタートについては、[メインREADME](./README.md)をご覧ください。
 
@@ -19,11 +19,11 @@
 
 ## システム概要
 
-open-nof1.ai は、大規模言語モデルの知能と量的取引実践を深く統合した AI 駆動の暗号通貨自動取引システムです。システムは Agent フレームワーク上に構築され、AI に完全な市場分析と取引意思決定の自律権を与えることで、真の知的取引を実現します。
+ai-trading-system は、大規模言語モデルの知能と量的取引実践を深く統合した AI 駆動の暗号通貨自動取引システムです。システムは Agent フレームワーク上に構築され、AI に完全な市場分析と取引意思決定の自律権を与えることで、真の知的取引を実現します。
 
 本システムは**最小限の人的介入**という設計思想を採用し、従来のハードコードされた取引ルールを廃止し、AI モデルが生の市場データに基づいて自律的に学習し意思決定できるようにします。システムは Gate.io 取引所（テストネットと本番ネットの両方をサポート）と統合し、BTC、ETH、SOL などの主要な暗号通貨をカバーする完全なパーペチュアル（永久）契約取引機能を提供し、データ収集、インテリジェント分析、リスク管理から取引実行までの全プロセスの自動化をサポートします。
 
-![open-nof1.ai](./public/image.png)
+![ai-trading-system](./public/image.png)
 
 ## 目次
 
@@ -557,7 +557,7 @@ npm run pm2:logs
 module.exports = {
   apps: [
     {
-      name: 'open-nof1.ai',
+      name: 'ai-trading-system',
       script: 'tsx',
       args: '--env-file=.env ./src',
       instances: 1,
@@ -579,26 +579,26 @@ module.exports = {
 
 ```bash
 # Docker イメージをビルド
-docker build -t open-nof1.ai:latest .
+docker build -t ai-trading-system:latest .
 
 # コンテナを実行
 docker run -d \
-  --name open-nof1.ai \
+  --name ai-trading-system \
   -p 3100:3100 \
   --env-file .env \
   --restart unless-stopped \
   -v ./voltagent-data:/app/.voltagent \
   -v ./logs:/app/logs \
-  open-nof1.ai:latest
+  ai-trading-system:latest
 
 # ログを表示
-docker logs -f open-nof1.ai
+docker logs -f ai-trading-system
 
 # コンテナを停止
-docker stop open-nof1.ai
+docker stop ai-trading-system
 
 # コンテナを削除
-docker rm open-nof1.ai
+docker rm ai-trading-system
 ```
 
 **Docker Compose**(推奨):
@@ -964,7 +964,7 @@ Conventional Commits 規約に従います:
 ---
 <div align="center">
 
-[![Star History Chart](https://api.star-history.com/svg?repos=195440/open-nof1.ai&type=Date)](https://star-history.com/#195440/open-nof1.ai&Date)
+[![Star History Chart](https://api.star-history.com/svg?repos=zhihongzhang123/ai-trading-system&type=Date)](https://star-history.com/#zhihongzhang123/ai-trading-system&Date)
 
 </div>
 

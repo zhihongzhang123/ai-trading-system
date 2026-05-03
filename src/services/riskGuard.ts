@@ -119,14 +119,14 @@ async function getTodayStartBalance(currentBalance: number): Promise<number> {
   const todayISO = today.toISOString();
 
   const result = await dbClient.execute({
-    sql: `SELECT total_balance FROM account_history
+    sql: `SELECT total_value FROM account_history
           WHERE timestamp < ?
           ORDER BY timestamp DESC
           LIMIT 1`,
     args: [todayISO],
   });
 
-  return (result.rows[0]?.total_balance as number) ?? currentBalance;
+  return (result.rows[0]?.total_value as number) ?? currentBalance;
 }
 
 /**

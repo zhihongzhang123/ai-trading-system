@@ -25,7 +25,7 @@ import "dotenv/config";
 
 // ==================== 环境变量验证 ====================
 const requiredEnvVars = [
-  "OKX_API_KEY", "OKX_API_SECRET", "OKX_PASSPHRASE",
+  "OKX_API_KEY", "OKX_API_SECRET", "OKX_API_PASSPHRASE",
   "OPENAI_API_KEY", "AI_MODEL_NAME",
 ];
 const missing = requiredEnvVars.filter(k => !process.env[k]);

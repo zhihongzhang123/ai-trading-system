@@ -1,6 +1,6 @@
 /**
- * open-nof1.ai - AI 加密货币自动交易系统
- * Copyright (C) 2025 195440
+ * AI Trading System - AI 驱动的加密货币自动交易系统
+ * Copyright (C) 2025 zhihongzhang123
  * 
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -22,7 +22,7 @@ require('dotenv').config();
 module.exports = {
   apps: [
     {
-      name: "open-nof1.ai",
+      name: "ai-trading-system",
       script: "./dist/index.js",
       instances: 1,
       exec_mode: "fork",

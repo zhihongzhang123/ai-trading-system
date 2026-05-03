@@ -1,6 +1,6 @@
 /**
- * open-nof1.ai - AI 加密货币自动交易系统
- * Copyright (C) 2025 195440
+ * AI Trading System - AI 驱动的加密货币自动交易系统
+ * Copyright (C) 2025 zhihongzhang123
  * 
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -29,8 +29,8 @@
  * ```typescript
  * import { getStrategyParams, generateStrategySpecificPrompt } from "./strategies";
  * 
- * const params = getStrategyParams("aggressive", 25);  // 获取激进策略参数（最大杠杆25倍）
- * const prompt = generateStrategySpecificPrompt("aggressive", params, context);  // 生成AI提示词
+ * const params = getStrategyParams("aggressive", 25);  // 获取激进策略参数（最大杠杆 25 倍）
+ * const prompt = generateStrategySpecificPrompt("aggressive", params, context);  // 生成 AI 提示词
  * ```
  */
 
@@ -45,9 +45,10 @@ export { getBalancedStrategy, generateBalancedPrompt } from "./balanced";       
 export { getAggressiveStrategy, generateAggressivePrompt } from "./aggressive";        // 激进策略
 export { getAggressiveTeamStrategy, generateAggressiveTeamPrompt } from "./aggressiveTeam";  // 激进团策略
 export { getRebateFarmingStrategy, generateRebateFarmingPrompt } from "./rebateFarming";  // 返佣套利策略
-export { getAiAutonomousStrategy, generateAiAutonomousPrompt } from "./aiAutonomous";  // AI自主策略
-export { getMultiAgentConsensusStrategy, generateMultiAgentConsensusPrompt } from "./multiAgentConsensus";  // 多Agent共识策略
-export { getAlphaBetaStrategy, generateAlphaBetaPrompt } from "./alphaBeta";  // Alpha Beta策略
+export { getAiAutonomousStrategy, generateAiAutonomousPrompt } from "./aiAutonomous";  // AI 自主策略
+export { getMultiAgentConsensusStrategy, generateMultiAgentConsensusPrompt } from "./multiAgentConsensus";  // 多 Agent 共识策略
+export { getAlphaBetaStrategy, generateAlphaBetaPrompt } from "./alphaBeta";  // Alpha Beta 策略
+export { getTrendFollowingStrategy, getTrendFollowingPrompt } from "./trendFollowing";  // 趋势跟踪策略
 
 import type { TradingStrategy, StrategyParams, StrategyPromptContext } from "./types";
 import { getUltraShortStrategy, generateUltraShortPrompt } from "./ultraShort";
@@ -61,6 +62,7 @@ import { getRebateFarmingStrategy, generateRebateFarmingPrompt } from "./rebateF
 import { getAiAutonomousStrategy, generateAiAutonomousPrompt } from "./aiAutonomous";
 import { getMultiAgentConsensusStrategy, generateMultiAgentConsensusPrompt } from "./multiAgentConsensus";
 import { getAlphaBetaStrategy, generateAlphaBetaPrompt } from "./alphaBeta";
+import { getTrendFollowingStrategy, getTrendFollowingPrompt } from "./trendFollowing";
 
 /**
  * 获取策略参数（基于 MAX_LEVERAGE 动态计算）
@@ -104,6 +106,8 @@ export function getStrategyParams(strategy: TradingStrategy, maxLeverage: number
       return getMultiAgentConsensusStrategy(maxLeverage);
     case "alpha-beta":
       return getAlphaBetaStrategy(maxLeverage);
+    case "trend-following":
+      return getTrendFollowingStrategy(maxLeverage);
     default:
       return getAlphaBetaStrategy(maxLeverage);
   }
@@ -162,6 +166,8 @@ export function generateStrategySpecificPrompt(
       return generateMultiAgentConsensusPrompt(params, context);
     case "alpha-beta":
       return generateAlphaBetaPrompt(params, context);
+    case "trend-following":
+      return getTrendFollowingPrompt(context);
     default:
       return generateAlphaBetaPrompt(params, context);
   }

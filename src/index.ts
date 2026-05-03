@@ -1,6 +1,6 @@
 /**
- * open-nof1.ai - AI 加密货币自动交易系统
- * Copyright (C) 2025 195440
+ * AI Trading System - AI 驱动的加密货币自动交易系统
+ * Copyright (C) 2025 zhihongzhang123
  * 
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
@@ -14,6 +14,10 @@
  * 
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ * 
+ * @repository https://github.com/zhihongzhang123/ai-trading-system
+ * @author zhihongzhang123
+ * @description AI 驱动的加密货币自动交易系统，基于 VoltAgent 框架和 LLM 智能决策
  */
 
 import "dotenv/config";

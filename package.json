@@ -1,9 +1,9 @@
 {
-  "name": "open-nof1.ai",
-  "version": "0.1.0",
-  "description": "nof1.ai Agent 自动交易系统",
+  "name": "ai-trading-system",
+  "version": "1.0.0",
+  "description": "AI 驱动的加密货币自动交易系统 - 基于 VoltAgent 框架和 LLM 智能决策",
   "type": "module",
-  "author": "195440",
+  "author": "zhihongzhang123",
   "license": "AGPL-3.0",
   "keywords": [
     "bitcoin",
@@ -12,16 +12,19 @@
     "ai",
     "voltagent",
     "automated-trading",
-    "gate-io"
+    "gate-io",
+    "okx",
+    "llm",
+    "quantitative-trading"
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/yourusername/open-nof1.ai.git"
+    "url": "https://github.com/zhihongzhang123/ai-trading-system.git"
   },
   "bugs": {
-    "url": "https://github.com/yourusername/open-nof1.ai/issues"
+    "url": "https://github.com/zhihongzhang123/ai-trading-system/issues"
   },
-  "homepage": "https://github.com/yourusername/open-nof1.ai#readme",
+  "homepage": "https://github.com/zhihongzhang123/ai-trading-system#readme",
   "scripts": {
     "dev": "tsx watch --env-file=.env ./src",
     "build": "tsdown",

@@ -33,7 +33,7 @@
  * - alpha-beta: Alpha Beta 策略，零策略指导的 AI 完全自主决策
  * - trend-following: 趋势跟踪策略，中低风险，跟随主要趋势
  */
-export type TradingStrategy = "conservative" | "balanced" | "aggressive" | "aggressive-team" | "ultra-short" | "swing-trend" | "medium-long" | "rebate-farming" | "ai-autonomous" | "multi-agent-consensus" | "alpha-beta" | "trend-following";
+export type TradingStrategy = "conservative" | "conservative-recovery" | "balanced" | "aggressive" | "aggressive-team" | "ultra-short" | "swing-trend" | "medium-long" | "rebate-farming" | "ai-autonomous" | "multi-agent-consensus" | "alpha-beta" | "trend-following";
 
 /**
  * 策略提示词生成上下文

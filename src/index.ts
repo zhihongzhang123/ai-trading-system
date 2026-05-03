@@ -47,6 +47,8 @@ import { initDatabase } from "./database/init";
 import { RISK_PARAMS } from "./config/riskParams";
 import { getStrategyParams, getTradingStrategy } from "./agents/tradingAgent";
 import { initializeTerminalEncoding} from "./utils/encodingUtils";
+import { notifySystemStart } from "./services/telegramNotifier";
+import { createExchangeClient } from "./services/exchangeClient";
 
 // 设置时区为中国时间（Asia/Shanghai，UTC+8）
 process.env.TZ = 'Asia/Shanghai';
@@ -168,6 +170,18 @@ async function main() {
   logger.info(`\n🔴 账户止损线: ${process.env.ACCOUNT_STOP_LOSS_USDT || 50} USDT (触发后全部清仓并退出)`);
   logger.info(`🟢 账户止盈线: ${process.env.ACCOUNT_TAKE_PROFIT_USDT || 10000} USDT (触发后全部清仓并退出)`);
   logger.info("\n按 Ctrl+C 停止系统\n");
+
+  // 发送系统启动 Telegram 通知（异步，不阻塞）
+  try {
+    const exchangeClient = createExchangeClient();
+    const account = await exchangeClient.getFuturesAccount();
+    const balance = parseFloat(account?.totalEq || account?.totalBalance || "0");
+    if (balance > 0) {
+      await notifySystemStart(params.name, balance);
+    }
+  } catch (error) {
+    logger.debug("发送启动通知失败（可能未配置 Telegram）:", error);
+  }
 }
 
 // 错误处理

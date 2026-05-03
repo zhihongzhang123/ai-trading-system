@@ -49,6 +49,7 @@ export { getAiAutonomousStrategy, generateAiAutonomousPrompt } from "./aiAutonom
 export { getMultiAgentConsensusStrategy, generateMultiAgentConsensusPrompt } from "./multiAgentConsensus";  // 多 Agent 共识策略
 export { getAlphaBetaStrategy, generateAlphaBetaPrompt } from "./alphaBeta";  // Alpha Beta 策略
 export { getTrendFollowingStrategy, getTrendFollowingPrompt } from "./trendFollowing";  // 趋势跟踪策略
+export { getConservativeRecoveryStrategy, getConservativeRecoveryPrompt } from "./conservativeRecovery";  // 保守恢复策略
 
 import type { TradingStrategy, StrategyParams, StrategyPromptContext } from "./types";
 import { getUltraShortStrategy, generateUltraShortPrompt } from "./ultraShort";
@@ -62,6 +63,7 @@ import { getRebateFarmingStrategy, generateRebateFarmingPrompt } from "./rebateF
 import { getAiAutonomousStrategy, generateAiAutonomousPrompt } from "./aiAutonomous";
 import { getMultiAgentConsensusStrategy, generateMultiAgentConsensusPrompt } from "./multiAgentConsensus";
 import { getAlphaBetaStrategy, generateAlphaBetaPrompt } from "./alphaBeta";
+import { getConservativeRecoveryStrategy, getConservativeRecoveryPrompt } from "./conservativeRecovery";
 import { getTrendFollowingStrategy, getTrendFollowingPrompt } from "./trendFollowing";
 
 /**
@@ -108,6 +110,8 @@ export function getStrategyParams(strategy: TradingStrategy, maxLeverage: number
       return getAlphaBetaStrategy(maxLeverage);
     case "trend-following":
       return getTrendFollowingStrategy(maxLeverage);
+    case "conservative-recovery":
+      return getConservativeRecoveryStrategy(maxLeverage);
     default:
       return getAlphaBetaStrategy(maxLeverage);
   }
@@ -167,7 +171,9 @@ export function generateStrategySpecificPrompt(
     case "alpha-beta":
       return generateAlphaBetaPrompt(params, context);
     case "trend-following":
-      return getTrendFollowingPrompt(context);
+      return getTrendFollowingPrompt(params, context);
+    case "conservative-recovery":
+      return getConservativeRecoveryPrompt(params, context);
     default:
       return generateAlphaBetaPrompt(params, context);
   }

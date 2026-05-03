@@ -28,6 +28,9 @@ import { getChinaTimeISO } from "../utils/timeUtils";
 import { RISK_PARAMS } from "../config/riskParams";
 import { getQuantoMultiplier } from "../utils/contractUtils";
 import { initNewsClient, fetchCryptoNews, fetchExchangeAnnouncements, fetchLatestEvents, aggregateSentiment } from "../services/newsClient";
+import { checkRiskGuard, formatRiskGuardForPrompt, calculateSafePositionSize, calculateSafeLeverage, logRiskEvent } from "../services/riskGuard";
+import { newsCache, okxCircuitBreaker, CACHE_TTL } from "../services/dataCache";
+import { sendNotification, notifyRiskBlocked, notifyCircuitBreaker, notifySystemStart } from "../services/telegramNotifier";
 
 const logger = createLogger({
   name: "trading-loop",
@@ -235,6 +238,7 @@ async function collectMarketData() {
 /**
  * 收集消息面数据（快讯/公告/社交情绪）
  * 遍历 SYMBOLS 列表，为每个币种获取消息面数据
+ * 优化：增加缓存机制，减少重复请求
  * 失败不影响主流程
  */
 async function collectNewsData(): Promise<Record<string, any>> {
@@ -246,6 +250,16 @@ async function collectNewsData(): Promise<Record<string, any>> {
 
   for (const symbol of SYMBOLS) {
     try {
+      // 尝试从缓存获取
+      const cacheKey = `news:${symbol}`;
+      const cached = newsCache.get(cacheKey);
+      if (cached) {
+        newsData[symbol] = cached;
+        logger.debug(`${symbol} 消息面数据使用缓存`);
+        continue;
+      }
+
+      // 缓存未命中，请求新数据
       const [newsResult, announcementsResult, eventsResult] = await Promise.allSettled([
         fetchCryptoNews(symbol, 5),
         fetchExchangeAnnouncements(symbol, 5),
@@ -257,7 +271,11 @@ async function collectNewsData(): Promise<Record<string, any>> {
       const events = eventsResult.status === "fulfilled" ? eventsResult.value : [];
       const sentiment = news.length > 0 ? aggregateSentiment(news) : null;
 
-      newsData[symbol] = { news, announcements, events, sentiment };
+      const result = { news, announcements, events, sentiment };
+      newsData[symbol] = result;
+
+      // 写入缓存（15 分钟有效期）
+      newsCache.set(cacheKey, result, CACHE_TTL.NEWS);
     } catch (error) {
       logger.warn(`获取 ${symbol} 消息面数据失败:`, error as any);
       newsData[symbol] = { news: [], announcements: [], events: [], sentiment: null };
@@ -1229,6 +1247,29 @@ async function executeTradingDecision() {
       if (!accountInfo || accountInfo.totalBalance === 0) {
         logger.error("账户数据异常，跳过本次循环");
         return;
+      }
+      
+      // 2.5 风控检查（新增）
+      try {
+        const riskState = await checkRiskGuard(accountInfo.totalBalance);
+        if (!riskState.canTrade) {
+          const blockedReason = riskState.blockedReason || "未知原因";
+          logger.warn(`⛔ 风控拦截: ${blockedReason}`);
+          await logRiskEvent({
+            type: "blocked",
+            message: blockedReason,
+            balance: accountInfo.totalBalance,
+          });
+          // 发送 Telegram 告警
+          await notifyRiskBlocked(blockedReason, accountInfo.totalBalance);
+          return; // 跳过本次交易周期
+        }
+        logger.info(`✅ 风控通过: ${riskState.isRecoveryMode ? "恢复模式" : "正常模式"} | 今日盈亏: ${riskState.dailyPnLPercent >= 0 ? "+" : ""}${riskState.dailyPnLPercent.toFixed(2)}% | 连续亏损: ${riskState.consecutiveLosses}次`);
+        
+        // 将风控状态存入全局上下文，供后续使用
+        (global as any).__riskState = riskState;
+      } catch (riskError) {
+        logger.warn("风控检查失败，继续交易（降级模式）:", riskError as any);
       }
       
       // 检查账户余额是否触发止损或止盈

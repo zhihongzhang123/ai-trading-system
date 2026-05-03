@@ -26,6 +26,7 @@ import { createOpenAI } from "@ai-sdk/openai";
 import * as tradingTools from "../tools/trading";
 import { formatChinaTime } from "../utils/timeUtils";
 import { RISK_PARAMS } from "../config/riskParams";
+import { checkRiskGuard, formatRiskGuardForPrompt, calculateSafePositionSize, calculateSafeLeverage, logRiskEvent } from "../services/riskGuard";
 
 /**
  * 账户风险配置
@@ -861,6 +862,14 @@ export function generateTradingPrompt(data: {
   // 获取当前策略参数（用于每周期强调风控规则）
   const strategy = getTradingStrategy();
   const params = getStrategyParams(strategy);
+  
+  // 获取风控状态（如果已设置）
+  const riskState = (global as any).__riskState || null;
+  let riskGuardText = "";
+  if (riskState) {
+    riskGuardText = formatRiskGuardForPrompt(riskState);
+  }
+  
   // 判断是否启用自动监控止损和移动止盈（根据策略配置）
   const isCodeLevelProtectionEnabled = params.enableCodeLevelProtection;
   // 判断是否允许AI在代码级保护之外继续主动操作（双重防护模式）
@@ -918,7 +927,7 @@ export function generateTradingPrompt(data: {
 当前策略：${params.name}（${params.description}）
 目标月回报：${params.name === '稳健' ? '10-20%' : params.name === '平衡' ? '20-40%' : params.name === '激进' ? '30-50%（频繁小盈利累积）' : params.name === '激进团' ? '50-80%' : '20-30%'}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
+${riskGuardText ? `\n${riskGuardText}\n` : ""}
 【硬性风控底线 - 系统强制执行】
 ┌─────────────────────────────────────────┐
 │ 单笔亏损 ≤ ${RISK_PARAMS.EXTREME_STOP_LOSS_PERCENT}%：强制平仓               │

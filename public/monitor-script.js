@@ -33,10 +33,6 @@ class TradingMonitor {
         this.initEquityChart();
         this.initTimeframeSelector();
         this.startDataUpdates();
-        this.initTabs();
-        this.initChat();
-        this.duplicateTicker();
-        this.loadGitHubStars(); // 加载 GitHub 星标数
         this.initLoginModal(); // 初始化登录弹窗
         this.checkLoginStatus(); // 检查登录状态
     }
@@ -54,26 +50,6 @@ class TradingMonitor {
             ]);
         } catch (error) {
             console.error('加载初始数据失败:', error);
-        }
-    }
-
-    // 加载 GitHub 星标数
-    async loadGitHubStars() {
-        try {
-            const response = await fetch('https://api.github.com/repos/zhihongzhang123/ai-trading-system');
-            const data = await response.json();
-            const starsCount = document.getElementById('stars-count');
-            if (starsCount && data.stargazers_count !== undefined) {
-                // 格式化星标数（超过1000显示 k）
-                const count = data.stargazers_count;
-                starsCount.textContent = count >= 1000 ? `${(count / 1000).toFixed(1)}k` : count;
-            }
-        } catch (error) {
-            console.error('加载 GitHub 星标数失败:', error);
-            const starsCount = document.getElementById('stars-count');
-            if (starsCount) {
-                starsCount.textContent = '-';
-            }
         }
     }
 
@@ -424,7 +400,7 @@ class TradingMonitor {
     // 加载顶部 Ticker 价格（从 API 获取）
     async loadTickerPrices() {
         try {
-            const response = await fetch('/api/prices?symbols=BTC,ETH,SOL,BNB,DOGE,XRP');
+            const response = await fetch('/api/prices?symbols=BTC');
             const data = await response.json();
             
             if (data.error) {

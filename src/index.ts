@@ -20,6 +20,7 @@
  * @description AI 驱动的加密货币自动交易系统，基于 VoltAgent 框架和 LLM 智能决策
  */
 
+import "./proxySetup";
 import "dotenv/config";
 import { createLogger } from "./utils/loggerUtils";
 import { serve } from "@hono/node-server";

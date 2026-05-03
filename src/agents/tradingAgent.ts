@@ -73,7 +73,7 @@ const logger = createLogger({
  */
 export function getTradingStrategy(): TradingStrategy {
   const strategy = process.env.TRADING_STRATEGY || "alpha-beta";
-  if (strategy === "conservative" || strategy === "balanced" || strategy === "aggressive" || strategy === "aggressive-team" || strategy === "ultra-short" || strategy === "swing-trend" || strategy === "medium-long" || strategy === "rebate-farming" || strategy === "ai-autonomous" || strategy === "multi-agent-consensus" || strategy === "alpha-beta") {
+  if (strategy === "conservative" || strategy === "balanced" || strategy === "aggressive" || strategy === "aggressive-team" || strategy === "ultra-short" || strategy === "swing-trend" || strategy === "medium-long" || strategy === "rebate-farming" || strategy === "ai-autonomous" || strategy === "multi-agent-consensus" || strategy === "alpha-beta" || strategy === "trend-following") {
     return strategy;
   }
   logger.warn(`未知的交易策略: ${strategy}，使用默认策略: balanced`);

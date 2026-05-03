@@ -327,6 +327,7 @@ export class OkxClient {
 
   /**
    * 获取账户余额（带重试机制）
+   * 支持 USDT/USDC 双稳定币，自动降级到 totalEq
    */
   async getFuturesAccount(retries: number = 2): Promise<any> {
     let lastError: any;
@@ -340,20 +341,42 @@ export class OkxClient {
         }
         
         const account = data[0];
-        const usdtDetail = account.details?.find((d: any) => d.ccy === "USDT");
+        const details = account.details || [];
         
-        if (!usdtDetail) {
-          throw new Error("USDT account not found");
+        // 优先 USDT，降级 USDC，最后用 totalEq
+        let targetDetail = details.find((d: any) => d.ccy === "USDT");
+        if (!targetDetail) {
+          targetDetail = details.find((d: any) => d.ccy === "USDC");
+        }
+        
+        const totalEqUsd = account.totalEq || "0";
+        
+        if (!targetDetail && parseFloat(totalEqUsd) === 0) {
+          throw new Error("No USDT/USDC account found and totalEq is 0");
         }
         
         // 转换为 Gate 格式
+        if (targetDetail) {
+          return {
+            currency: targetDetail.ccy,
+            total: targetDetail.eq,
+            available: targetDetail.availBal || targetDetail.availEq || "0",
+            positionMargin: targetDetail.frozenBal || "0",
+            orderMargin: targetDetail.ordFrozen || "0",
+            unrealisedPnl: details.reduce((sum: number, d: any) => {
+              return sum + parseFloat(d.upl || "0");
+            }, 0).toString(),
+          };
+        }
+        
+        // 没有单一稳定币，使用 totalEq（统一账户美元等值）
         return {
-          currency: "USDT",
-          total: usdtDetail.eq, // 币种总权益
-          available: usdtDetail.availBal, // 可用保证金
-          positionMargin: usdtDetail.frozenBal, // 持仓占用保证金
-          orderMargin: usdtDetail.ordFrozen || "0", // 挂单占用保证金
-          unrealisedPnl: account.details.reduce((sum: number, d: any) => {
+          currency: "USD",
+          total: totalEqUsd,
+          available: totalEqUsd,
+          positionMargin: "0",
+          orderMargin: "0",
+          unrealisedPnl: details.reduce((sum: number, d: any) => {
             return sum + parseFloat(d.upl || "0");
           }, 0).toString(),
         };

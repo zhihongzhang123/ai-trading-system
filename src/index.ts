@@ -23,6 +23,12 @@
 import "./proxySetup";
 import "dotenv/config";
 
+// ==================== 单实例锁检查 ====================
+import { acquireSingleInstanceLock } from "./utils/singleInstance";
+if (!acquireSingleInstanceLock()) {
+  process.exit(1);
+}
+
 // ==================== 环境变量验证 ====================
 const requiredEnvVars = [
   "OKX_API_KEY", "OKX_API_SECRET", "OKX_API_PASSPHRASE",

@@ -56,13 +56,13 @@ async function syncFromGate() {
     
     // 2. 获取持仓信息
     const positions = await exchangeClient.getPositions();
-    const activePositions = positions.filter(p => Number.parseInt(p.size || "0") !== 0);
+    const activePositions = positions.filter(p => Number.parseFloat(p.size || "0") !== 0);
     logger.info(`   当前持仓数: ${activePositions.length}`);
     
     if (activePositions.length > 0) {
       logger.info(`\n   持仓详情:`);
       for (const pos of activePositions) {
-        const size = Number.parseInt(pos.size || "0");
+        const size = Number.parseFloat(pos.size || "0");
         const symbol = pos.contract.replace("_USDT", "");
         const side = size > 0 ? "做多" : "做空";
         const pnl = Number.parseFloat(pos.unrealisedPnl || "0");
@@ -124,7 +124,7 @@ async function syncFromGate() {
       logger.info(`\n🔄 同步 ${activePositions.length} 个持仓到数据库...`);
       
       for (const pos of activePositions) {
-        const size = Number.parseInt(pos.size || "0");
+        const size = Number.parseFloat(pos.size || "0");
         if (size === 0) continue;
         
         const symbol = pos.contract.replace("_USDT", "");

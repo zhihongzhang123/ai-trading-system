@@ -167,13 +167,19 @@ CREATE TABLE IF NOT EXISTS trading_signals (
   ema_20 REAL NOT NULL,
   ema_50 REAL,
   macd REAL NOT NULL,
+  macd_dea REAL,
+  macd_histogram REAL,
   rsi_7 REAL NOT NULL,
   rsi_14 REAL NOT NULL,
   volume REAL NOT NULL,
   open_interest REAL,
   funding_rate REAL,
   atr_3 REAL,
-  atr_14 REAL
+  atr_14 REAL,
+  adx_14 REAL,
+  boll_upper REAL,
+  boll_middle REAL,
+  boll_lower REAL
 );
 
 -- Agent 决策记录表
@@ -185,7 +191,8 @@ CREATE TABLE IF NOT EXISTS agent_decisions (
   decision TEXT NOT NULL,
   actions_taken TEXT NOT NULL,
   account_value REAL NOT NULL,
-  positions_count INTEGER NOT NULL
+  positions_count INTEGER NOT NULL,
+  structured_decision TEXT
 );
 
 -- 系统配置表

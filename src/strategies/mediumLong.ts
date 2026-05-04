@@ -16,7 +16,7 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import type { StrategyParams, StrategyPromptContext } from "./types";
+import type { StrategyParams, StrategyPromptContext } from "./types.js";
 
 /**
  * 中长线策略配置
@@ -105,10 +105,10 @@ export function getMediumLongStrategy(maxLeverage: number): StrategyParams {
     // AI可以根据趋势强度灵活调整，这里提供建议值
     // 执行方式：AI根据此配置主动判断和执行（enableCodeLevelProtection = false）
     partialTakeProfit: {
-      // 中长线策略：分批止盈，追求利润最大化
-      stage1: { trigger: 35, closePercent: 30 },   // +35%时平仓30%（保留70%追求更大利润）
-      stage2: { trigger: 60, closePercent: 50 },   // +60%时平仓剩余50%（累计平仓65%）
-      stage3: { trigger: 100, closePercent: 100 }, // +100%时全部清仓（翻倍止盈）
+      // 盈利≥70%才开始分批止盈，让利润充分奔跑
+      stage1: { trigger: 70, closePercent: 30 },  // +70%时平仓30%（首次收割）
+      stage2: { trigger: 80, closePercent: 70 },  // +80%时累计平仓70%（再平40%）
+      stage3: { trigger: 90, closePercent: 100 }, // +90%时全部清仓（利润落袋）
     },
     
     // ==================== 峰值回撤保护 ====================

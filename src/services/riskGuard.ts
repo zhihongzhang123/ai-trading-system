@@ -131,10 +131,19 @@ async function getTodayStartBalance(currentBalance: number): Promise<number> {
 
 /**
  * 检查冷却期是否还在生效
+ * @param baseCooldownMinutes 基础冷却时间（环境变量 COOLDOWN_MINUTES，默认60分钟）
+ * @param consecutiveLosses 连续亏损次数
+ * @param dailyLossPercent 今日亏损百分比（负值）
+ * @param dailyLossLimit 日亏损限制百分比
  */
-async function checkCooldown(cooldownMinutes: number): Promise<{ isInCooldown: boolean; endsAt: Date | null }> {
+async function checkCooldown(
+  baseCooldownMinutes: number,
+  consecutiveLosses: number,
+  dailyLossPercent: number = 0,
+  dailyLossLimit: number = 5,
+): Promise<{ isInCooldown: boolean; endsAt: Date | null; effectiveMinutes: number }> {
   const result = await dbClient.execute({
-    sql: `SELECT timestamp FROM trades
+    sql: `SELECT timestamp, pnl FROM trades
           WHERE type = 'close' AND pnl < 0
           ORDER BY timestamp DESC
           LIMIT 1`,
@@ -142,17 +151,30 @@ async function checkCooldown(cooldownMinutes: number): Promise<{ isInCooldown: b
   });
 
   if (result.rows.length === 0) {
-    return { isInCooldown: false, endsAt: null };
+    return { isInCooldown: false, endsAt: null, effectiveMinutes: baseCooldownMinutes };
   }
+
+  // 动态冷却计算：
+  // 1. 基础冷却 × 连续亏损的指数倍（每超出1次翻倍）
+  //    例：阈值3次，实际3次→1x，4次→2x，5次→4x
+  const threshold = 3; // 与 riskParams.maxConsecutiveLosses 默认值一致
+  const excessLosses = Math.max(0, consecutiveLosses - threshold);
+  const lossMultiplier = Math.pow(2, excessLosses);
+
+  // 2. 如果今日亏损接近日限额（>70%），额外×1.5
+  const lossRatio = Math.abs(dailyLossPercent) / dailyLossLimit;
+  const severityMultiplier = lossRatio > 0.7 ? 1.5 : 1.0;
+
+  const effectiveMinutes = Math.round(baseCooldownMinutes * lossMultiplier * severityMultiplier);
 
   const lastLossTime = new Date(result.rows[0].timestamp as string);
-  const cooldownEnd = new Date(lastLossTime.getTime() + cooldownMinutes * 60 * 1000);
+  const cooldownEnd = new Date(lastLossTime.getTime() + effectiveMinutes * 60 * 1000);
 
   if (new Date() < cooldownEnd) {
-    return { isInCooldown: true, endsAt: cooldownEnd };
+    return { isInCooldown: true, endsAt: cooldownEnd, effectiveMinutes };
   }
 
-  return { isInCooldown: false, endsAt: null };
+  return { isInCooldown: false, endsAt: null, effectiveMinutes };
 }
 
 /**
@@ -213,7 +235,12 @@ export async function checkRiskGuard(currentBalance: number, config?: RiskGuardC
 
   // 4. 连续亏损冷却检查
   if (consecutiveLosses >= cfg.maxConsecutiveLosses) {
-    const { isInCooldown, endsAt } = await checkCooldown(cfg.cooldownMinutes);
+    const { isInCooldown, endsAt, effectiveMinutes } = await checkCooldown(
+      cfg.cooldownMinutes,
+      consecutiveLosses,
+      dailyPnLPercent,
+      cfg.dailyLossLimitPercent,
+    );
     if (isInCooldown) {
       return {
         isRecoveryMode: false,
@@ -223,7 +250,7 @@ export async function checkRiskGuard(currentBalance: number, config?: RiskGuardC
         dailyPnLPercent,
         consecutiveLosses,
         canTrade: false,
-        blockedReason: `连续 ${consecutiveLosses} 次亏损，进入 ${cfg.cooldownMinutes} 分钟冷却期，结束于 ${endsAt?.toLocaleString("zh-CN")}`,
+        blockedReason: `连续 ${consecutiveLosses} 次亏损，进入动态冷却期（${effectiveMinutes} 分钟），结束于 ${endsAt?.toLocaleString("zh-CN")}`,
         todayStartBalance,
       };
     }

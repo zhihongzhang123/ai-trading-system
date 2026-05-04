@@ -45,6 +45,14 @@ export function createApiRoutes() {
   // IP 黑名单中间件 - 拦截黑名单 IP
   app.use("*", ipBlacklistMiddleware);
 
+  // 禁止缓存 API 响应 - 确保刷新页面获取最新数据
+  app.use("/api/*", async (c, next) => {
+    await next();
+    c.header("Cache-Control", "no-cache, no-store, must-revalidate");
+    c.header("Pragma", "no-cache");
+    c.header("Expires", "0");
+  });
+
   // 静态文件服务 - 需要使用绝对路径
   app.use("/*", serveStatic({ root: "./public" }));
 
@@ -76,37 +84,74 @@ export function createApiRoutes() {
         ? Number.parseFloat(initialResult.rows[0].total_value as string)
         : 100;
       
-      // Gate.io 的 account.total 不包含未实现盈亏
-      // 总资产（不含未实现盈亏）= account.total
+      // 计算核心指标
       const unrealisedPnl = Number.parseFloat(account.unrealisedPnl || "0");
       const totalBalance = Number.parseFloat(account.total || "0");
-
-      // 收益率 = (总资产 - 初始资金) / 初始资金 * 100
-      // 总资产不包含未实现盈亏，收益率反映已实现盈亏
-      const returnPercent = ((totalBalance - initialBalance) / initialBalance) * 100;
-
-      // 查询累计手续费（所有已平仓交易的手续费总和）
+      const availableBalance = Number.parseFloat(account.available || "0");
+      const positionMargin = Number.parseFloat(account.positionMargin || "0");
+      
+      // 净资产 = 总资产 + 未实现盈亏
+      const equity = totalBalance + unrealisedPnl;
+      
+      // 保证金占用率 = 保证金 / 总资产
+      const marginRatio = totalBalance > 0 ? (positionMargin / totalBalance) * 100 : 0;
+      
+      // 可用保证金 = 总资产 - 保证金
+      const availableMargin = totalBalance - positionMargin;
+      
+      // 收益率（基于净资产）
+      const returnPercent = initialBalance > 0 ? ((equity - initialBalance) / initialBalance) * 100 : 0;
+      
+      // 查询累计手续费
       const feeResult = await dbClient.execute(
         "SELECT COALESCE(SUM(fee), 0) as total_fee FROM trades WHERE type = 'close'"
       );
       const totalFees = Number.parseFloat(feeResult.rows[0]?.total_fee as string || "0");
-
-      // 返佣比例（从环境变量读取，默认20%）
+      
+      // 返佣
       const feeRebatePercent = Number.parseFloat(process.env.FEE_REBATE_PERCENT || "20");
       const rebateAmount = totalFees * (feeRebatePercent / 100);
-
-      return c.json({
-        totalBalance,  // 总资产（不包含未实现盈亏）
-        availableBalance: Number.parseFloat(account.available || "0"),
-        positionMargin: Number.parseFloat(account.positionMargin || "0"),
-        unrealisedPnl,
-        returnPercent,  // 收益率（不包含未实现盈亏）
-        initialBalance,
-        totalFees,           // 累计手续费
-        feeRebatePercent,    // 返佣比例（%）
-        rebateAmount,        // 返佣金额
-        timestamp: new Date().toISOString(),
-      });
+      
+      // 查询持仓数量
+      try {
+        const positions = await exchangeClient.getPositions();
+        const openPositions = positions.filter((p: any) => Math.abs(Number.parseFloat(p.size || "0")) > 0);
+        
+        return c.json({
+          totalBalance,
+          equity,  // 净资产（含未实现盈亏）
+          availableBalance,
+          positionMargin,
+          availableMargin,
+          marginRatio: Math.round(marginRatio * 100) / 100,
+          unrealisedPnl,
+          returnPercent: Math.round(returnPercent * 100) / 100,
+          initialBalance,
+          positionCount: openPositions.length,
+          totalFees,
+          feeRebatePercent,
+          rebateAmount,
+          timestamp: new Date().toISOString(),
+        });
+      } catch {
+        // 获取持仓失败不影响账户数据返回
+        return c.json({
+          totalBalance,
+          equity,
+          availableBalance,
+          positionMargin,
+          availableMargin,
+          marginRatio: Math.round(marginRatio * 100) / 100,
+          unrealisedPnl,
+          returnPercent: Math.round(returnPercent * 100) / 100,
+          initialBalance,
+          positionCount: 0,
+          totalFees,
+          feeRebatePercent,
+          rebateAmount,
+          timestamp: new Date().toISOString(),
+        });
+      }
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
     }
@@ -126,11 +171,11 @@ export function createApiRoutes() {
         dbResult.rows.map((row: any) => [row.symbol, row])
       );
       
-      // 过滤并格式化持仓
+      // 过滤并格式化持仓（注意：size 可能是小数如 0.09，必须用 parseFloat）
       const positions = gatePositions
-        .filter((p: any) => Number.parseInt(p.size || "0") !== 0)
+        .filter((p: any) => Math.abs(Number.parseFloat(p.size || "0")) > 0)
         .map((p: any) => {
-          const size = Number.parseInt(p.size || "0");
+          const size = Number.parseFloat(p.size || "0");
           const symbol = p.contract.replace("_USDT", "");
           const dbPos = dbPositionsMap.get(symbol);
           const entryPrice = Number.parseFloat(p.entryPrice || "0");
@@ -208,6 +253,7 @@ export function createApiRoutes() {
    */
   app.get("/api/trades", async (c) => {
     try {
+      const exchangeClient = createExchangeClient();
       const limit = Number.parseInt(c.req.query("limit") || "10");
       const symbol = c.req.query("symbol"); // 可选，筛选特定币种
       
@@ -230,7 +276,38 @@ export function createApiRoutes() {
       logger.info(`查询到 ${result.rows.length} 条交易记录`);
       
       if (!result.rows || result.rows.length === 0) {
-        return c.json({ trades: [] });
+        // 数据库无记录时，从交易所获取订单历史
+        try {
+          const exchangeOrders = await exchangeClient.getOrderHistory(undefined, 20);
+          const trades = exchangeOrders.map((order: any) => {
+            const symbol = order.contract?.replace("_USDT", "") || "BTC";
+            const size = Math.abs(Number.parseFloat(order.size || "0"));
+            const side = Number.parseFloat(order.size || "0") >= 0 ? "long" : "short";
+            const fillPrice = Number.parseFloat(order.fill_price || order.price || "0");
+            const createTime = order.create_time ? new Date(order.create_time * 1000).toISOString() : "";
+            
+            return {
+              id: order.id,
+              orderId: order.id,
+              symbol,
+              side,
+              type: "open",
+              price: Number.parseFloat(order.price || "0"),
+              fillPrice,
+              quantity: size,
+              leverage: 1,
+              pnl: null,
+              fee: 0,
+              timestamp: createTime,
+              status: order.status || "filled",
+            };
+          });
+          
+          return c.json({ trades, fromExchange: true });
+        } catch (exchangeError: any) {
+          logger.warn("从交易所获取订单历史失败:", exchangeError);
+          return c.json({ trades: [] });
+        }
       }
       
       // 转换数据库格式到前端需要的格式
@@ -277,6 +354,7 @@ export function createApiRoutes() {
         timestamp: row.timestamp,
         iteration: row.iteration,
         decision: row.decision,
+        structuredDecision: row.structured_decision ? JSON.parse(row.structured_decision) : null,
         actionsTaken: row.actions_taken,
         accountValue: row.account_value,
         positionsCount: row.positions_count,
@@ -333,6 +411,111 @@ export function createApiRoutes() {
         totalPnl,
         maxWin,
         maxLoss,
+      });
+    } catch (error: any) {
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  /**
+   * 获取信号质量评分历史（用于信号质量面板）
+   */
+  app.get("/api/quality-scores", async (c) => {
+    try {
+      const limit = parseInt(c.req.query("limit") || "10");
+
+      const result = await dbClient.execute({
+        sql: `SELECT timestamp, symbol, price, quality_score, score_components
+              FROM trading_signals
+              WHERE quality_score IS NOT NULL AND quality_score > 0
+              ORDER BY timestamp DESC
+              LIMIT ?`,
+        args: [limit],
+      });
+
+      const scores = result.rows.map((row: any) => {
+        let components: Record<string, number> = {};
+        try {
+          components = row.score_components ? JSON.parse(row.score_components) : {};
+        } catch {
+          components = {};
+        }
+        return {
+          timestamp: row.timestamp,
+          symbol: row.symbol,
+          price: row.price,
+          total: Number(row.quality_score),
+          components: {
+            resonance: components.resonance || 0,
+            alignment: components.alignment || 0,
+            trend: components.trend || 0,
+            volume: components.volume || 0,
+            position: components.position || 0,
+          },
+        };
+      });
+
+      return c.json({ scores });
+    } catch (error) {
+      console.error("获取质量评分失败:", error);
+      return c.json({ scores: [] });
+    }
+  });
+
+  /**
+   * 获取最新技术指标（实时仪表盘数据）
+   */
+  app.get("/api/indicators", async (c) => {
+    try {
+      const symbol = c.req.query("symbol") || "BTC";
+      
+      // 优先获取指标非零的最新记录
+      let result = await dbClient.execute({
+        sql: `SELECT * FROM trading_signals 
+              WHERE symbol = ? AND (macd != 0 OR ema_20 != 0)
+              ORDER BY timestamp DESC 
+              LIMIT 1`,
+        args: [symbol],
+      });
+      
+      if (result.rows.length === 0) {
+        result = await dbClient.execute({
+          sql: `SELECT * FROM trading_signals 
+                WHERE symbol = ? 
+                ORDER BY timestamp DESC 
+                LIMIT 1`,
+          args: [symbol],
+        });
+      }
+      
+      if (result.rows.length === 0) {
+        return c.json({ symbol, indicators: null });
+      }
+      
+      const row = result.rows[0] as any;
+      return c.json({
+        symbol,
+        timestamp: row.timestamp,
+        indicators: {
+          symbol,
+          timestamp: row.timestamp,
+          currentPrice: row.price,
+          // LEI均线组态（EMA 20/60/120 + MA200牛熊线）
+          ema20: row.ema_20,
+          ema60: row.ema_60,
+          ema120: row.ema_120,
+          ma200: row.ma_200,
+          // K线斜率（线性回归趋势过滤器）
+          slope20: row.slope_20,
+          // RSI & MACD
+          rsi: row.rsi_14 ?? row.rsi_7,
+          rsi14: row.rsi_14,
+          macd: row.macd,
+          // 成交量 & 量比
+          volume: row.volume,
+          avgVolume: row.avg_volume,
+          volRatio: row.volume && row.avg_volume && row.avg_volume > 0 ? row.volume / row.avg_volume : 1.0,
+        },
       });
     } catch (error: any) {
       return c.json({ error: error.message }, 500);
@@ -412,36 +595,17 @@ export function createApiRoutes() {
   });
 
   /**
-   * 手动平仓接口 - 需要验证密码
+   * 手动平仓接口
    */
   app.post("/api/close-position", async (c) => {
     try {
-      // 获取请求体
       const body = await c.req.json();
-      const { symbol, password } = body;
-      
-      // 验证必填参数
+      const { symbol } = body;
+
       if (!symbol) {
         return c.json({ success: false, message: "缺少必填参数: symbol" }, 400);
       }
-      
-      // 验证密码 - 仅使用 CLOSE_POSITION_PASSWORD
-      const correctPassword = process.env.CLOSE_POSITION_PASSWORD;
-      
-      // 如果未配置密码，拒绝平仓
-      if (!correctPassword) {
-        logger.error('平仓密码未配置 - 请在环境变量中设置 CLOSE_POSITION_PASSWORD');
-        return c.json({ 
-          success: false, 
-          message: "平仓功能未启用" 
-        }, 403);
-      }
-      
-      if (!password || password !== correctPassword) {
-        logger.warn(`平仓密码验证失败 - 币种: ${symbol}`);
-        return c.json({ success: false, message: "密码错误" }, 403);
-      }
-      
+
       logger.info(`开始手动平仓: ${symbol}`);
       
       const exchangeClient = createExchangeClient();
@@ -450,7 +614,7 @@ export function createApiRoutes() {
       // 获取当前持仓
       const allPositions = await exchangeClient.getPositions();
       const gatePosition = allPositions.find((p: any) => 
-        p.contract === contract && Number.parseInt(p.size || "0") !== 0
+        p.contract === contract && Number.parseFloat(p.size || "0") !== 0
       );
       
       if (!gatePosition) {
@@ -461,7 +625,7 @@ export function createApiRoutes() {
       }
       
       // 获取持仓信息
-      const size = Number.parseInt(gatePosition.size || "0");
+      const size = Number.parseFloat(gatePosition.size || "0");
       const side = size > 0 ? "long" : "short";
       const entryPrice = Number.parseFloat(gatePosition.entryPrice || "0");
       const currentPrice = Number.parseFloat(gatePosition.markPrice || "0");

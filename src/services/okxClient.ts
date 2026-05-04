@@ -198,19 +198,19 @@ export class OkxClient {
 
   /**
    * 将 Gate 格式的合约名转换为 OKX 格式
-   * Gate: BTC_USDT -> OKX: BTC-USDT-SWAP
+   * Gate: BTC_USDT -> OKX: BTC-USDT (现货)
    */
   private toOkxContract(gateContract: string): string {
     const symbol = gateContract.replace("_USDT", "");
-    return `${symbol}-USDT-SWAP`;
+    return `${symbol}-USDT`;
   }
 
   /**
    * 将 OKX 格式的合约名转换为 Gate 格式
-   * OKX: BTC-USDT-SWAP -> Gate: BTC_USDT
+   * OKX: BTC-USDT -> Gate: BTC_USDT
    */
   private toGateContract(okxContract: string): string {
-    const symbol = okxContract.replace("-USDT-SWAP", "");
+    const symbol = okxContract.replace("-USDT", "");
     return `${symbol}_USDT`;
   }
 
@@ -308,6 +308,7 @@ export class OkxClient {
     let bar = interval;
     if (interval === "1h") bar = "1H";
     else if (interval === "4h") bar = "4H";
+    else if (interval === "1d") bar = "1D";
     
     // K线数据直接使用 REST API，避免 WebSocket 复杂性
     // WebSocket 主要用于实时 ticker 推送
@@ -421,7 +422,7 @@ export class OkxClient {
     for (let i = 0; i <= retries; i++) {
       try {
         const data = await this.request("GET", "/api/v5/account/positions", {
-          instType: "SWAP",
+          instType: "MARGIN",
         });
         
         // 过滤：只保留允许的币种
@@ -558,14 +559,9 @@ export class OkxClient {
     }
     
     try {
-      // 首次下单前确保持仓模式已设置（双向持仓）
-      // 这个调用会被缓存，不会重复设置
-      await this.setPositionMode("long_short_mode");
-      // 确定订单方向和持仓方向
+      // 现货杠杆交易不需要 setPositionMode，移除合约专用调用
+      // 确定订单方向
       const side = params.size > 0 ? "buy" : "sell";
-      const posSide = params.reduceOnly 
-        ? (params.size > 0 ? "short" : "long") // 平仓时方向相反
-        : (params.size > 0 ? "long" : "short"); // 开仓时方向一致
       
       // OKX 订单类型
       let ordType = "market";
@@ -576,12 +572,11 @@ export class OkxClient {
         px = params.price.toString();
       }
       
-      // 构建订单参数
+      // 构建订单参数（现货杠杆模式）
       const order: any = {
         instId,
-        tdMode: "cross", // 全仓模式
+        tdMode: "cross", // 现货杠杆-全仓模式
         side,
-        posSide,
         ordType,
         sz: Math.abs(params.size).toString(),
       };
@@ -590,17 +585,11 @@ export class OkxClient {
         order.px = px;
       }
       
-      // 平仓标识
-      if (params.reduceOnly) {
-        order.reduceOnly = true;
-      }
-      
       logger.info(`OKX 下单请求:`, {
         contract: params.contract,
         instId,
         size: params.size,
         price: params.price,
-        reduceOnly: params.reduceOnly,
         orderParams: order,
       });
       
@@ -761,7 +750,7 @@ export class OkxClient {
   async getOpenOrders(contract?: string): Promise<any[]> {
     try {
       const params: any = {
-        instType: "SWAP",
+        instType: "MARGIN",
       };
       
       if (contract) {
@@ -869,7 +858,7 @@ export class OkxClient {
       const instId = this.toOkxContract(contract);
       
       const data = await this.request("GET", "/api/v5/public/instruments", {
-        instType: "SWAP",
+        instType: "MARGIN",
         instId,
       });
       
@@ -899,11 +888,11 @@ export class OkxClient {
   async getAllContracts(): Promise<any[]> {
     try {
       const data = await this.request("GET", "/api/v5/public/instruments", {
-        instType: "SWAP",
+        instType: "MARGIN",
       });
       
       return (data || [])
-        .filter((inst: any) => inst.instId.endsWith("-USDT-SWAP"))
+        .filter((inst: any) => inst.instId.endsWith("-USDT"))
         .map((inst: any) => {
           const gateContract = this.toGateContract(inst.instId);
           return {
@@ -961,7 +950,7 @@ export class OkxClient {
   async getMyTrades(contract?: string, limit: number = 10): Promise<any[]> {
     try {
       const params: any = {
-        instType: "SWAP",
+        instType: "MARGIN",
         limit: Math.min(limit, 100).toString(),
       };
       
@@ -995,7 +984,7 @@ export class OkxClient {
   async getPositionHistory(contract?: string, limit: number = 100, offset: number = 0): Promise<any[]> {
     try {
       const params: any = {
-        instType: "SWAP",
+        instType: "MARGIN",
         limit: Math.min(limit, 100).toString(),
       };
       
@@ -1035,7 +1024,7 @@ export class OkxClient {
   async getOrderHistory(contract?: string, limit: number = 10): Promise<any[]> {
     try {
       const params: any = {
-        instType: "SWAP",
+        instType: "MARGIN",
         limit: Math.min(limit, 100).toString(),
         state: "filled",
       };

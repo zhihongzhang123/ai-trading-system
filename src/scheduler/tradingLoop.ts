@@ -20,17 +20,18 @@
  * 交易循环 - 定时执行交易决策
  */
 import cron from "node-cron";
-import { createLogger } from "../utils/loggerUtils";
+import { createLogger } from "../utils/loggerUtils.js";
 import { createClient } from "@libsql/client";
-import { createTradingAgent, generateTradingPrompt, getAccountRiskConfig, getTradingStrategy, getStrategyParams } from "../agents/tradingAgent";
-import { createExchangeClient } from "../services/exchangeClient";
-import { getChinaTimeISO } from "../utils/timeUtils";
-import { RISK_PARAMS } from "../config/riskParams";
-import { getQuantoMultiplier } from "../utils/contractUtils";
-import { initNewsClient, fetchCryptoNews, fetchExchangeAnnouncements, fetchLatestEvents, aggregateSentiment } from "../services/newsClient";
-import { checkRiskGuard, formatRiskGuardForPrompt, calculateSafePositionSize, calculateSafeLeverage, logRiskEvent } from "../services/riskGuard";
-import { newsCache, okxCircuitBreaker, CACHE_TTL } from "../services/dataCache";
-import { sendNotification, notifyRiskBlocked, notifyCircuitBreaker, notifySystemStart } from "../services/telegramNotifier";
+import { createTradingAgent, generateTradingPrompt, getAccountRiskConfig, getTradingStrategy, getStrategyParams } from "../agents/tradingAgent.js";
+import { createExchangeClient } from "../services/exchangeClient.js";
+import { getChinaTimeISO } from "../utils/timeUtils.js";
+import { RISK_PARAMS } from "../config/riskParams.js";
+import { getQuantoMultiplier } from "../utils/contractUtils.js";
+import { initNewsClient, fetchCryptoNews, fetchExchangeAnnouncements, fetchLatestEvents, aggregateSentiment } from "../services/newsClient.js";
+import { checkRiskGuard, formatRiskGuardForPrompt, calculateSafePositionSize, calculateSafeLeverage, logRiskEvent } from "../services/riskGuard.js";
+import { newsCache, okxCircuitBreaker, CACHE_TTL } from "../services/dataCache.js";
+import { sendNotification, notifyRiskBlocked, notifyCircuitBreaker, notifySystemStart } from "../services/telegramNotifier.js";
+import { extractDecisionJSON, StructuredDecision, decisionToSummary } from "../agents/structuredDecision.js";
 
 const logger = createLogger({
   name: "trading-loop",
@@ -74,14 +75,370 @@ function ensureRange(value: number, min: number, max: number, defaultValue?: num
 }
 
 /**
+ * 决策质量评分模型（客观 0-100 分）
+ * 
+ * 纯数学计算，脱离 AI 自评。精简为3维评估：
+ * - 趋势共振(40): EMA排列 + K线斜率 + MACD方向
+ * - 周期对齐(35): 1h/1d 趋势一致性（LEI核心周期）
+ * - 量价确认(25): 量比 + RSI健康区
+ */
+interface IndicatorSnapshot {
+  price: number; ema20: number; ema60: number; ema120: number; ma200: number;
+  macd: number; rsi14: number; volume: number; avgVolume: number;
+  slope20: number; // 每根K线的平均涨跌幅%
+}
+
+interface QualityScoreResult {
+  total: number;           // 总分 0-100
+  trendResonance: number;  // 趋势共振 0-40
+  timeframeAlignment: number; // 周期对齐 0-35
+  volumeConfirmation: number; // 量价确认 0-25
+}
+
+function calculateQualityScore(
+  current: IndicatorSnapshot,
+  timeframes: Record<string, IndicatorSnapshot>
+): QualityScoreResult {
+  const result: QualityScoreResult = {
+    total: 0, trendResonance: 0, timeframeAlignment: 0, volumeConfirmation: 0,
+  };
+
+  // === 1. 趋势共振 (0-40 分) ===
+  // EMA 短中长期排列 (0-16)
+  const bullish = current.ema20 > current.ema60 && current.ema60 > current.ema120 && current.price > current.ema20;
+  const bearish = current.ema20 < current.ema60 && current.ema60 < current.ema120 && current.price < current.ema20;
+  if (bullish) result.trendResonance += 16;
+  else if (bearish) result.trendResonance += 16;
+  // 部分排列（20>60或60>120单边）给8分
+  else if ((current.ema20 > current.ema60 && current.price > current.ema20) ||
+           (current.ema20 < current.ema60 && current.price < current.ema20)) {
+    result.trendResonance += 8;
+  }
+  // EMA 粘合扣分（方向不明）
+  if (Math.abs(current.ema20 - current.ema60) / current.ema60 < 0.002) result.trendResonance -= 4;
+
+  // K线斜率方向确认 (0-12)
+  // slope20 > 0.05% 表示明显上升，< -0.05% 表示明显下降
+  if (current.slope20 > 0.05) result.trendResonance += 6;
+  else if (current.slope20 < -0.05) result.trendResonance += 6;
+  if (Math.abs(current.slope20) > 0.15) result.trendResonance += 6; // 强趋势
+  else if (Math.abs(current.slope20) > 0.08) result.trendResonance += 3;
+
+  // MACD 动量方向 (0-12) — 只做多系统，仅多方动量加分
+  if (current.macd > 0) result.trendResonance += 6; // 多方动量确认
+  // 空方动量不加分（只做多系统，下跌趋势不视为高质量信号）
+  // MACD绝对值大小（趋势力度）
+  if (current.price > 0) {
+    const macdRatio = Math.abs(current.macd) / current.price * 100;
+    if (macdRatio > 0.5) result.trendResonance += 6;
+    else if (macdRatio > 0.2) result.trendResonance += 3;
+  }
+
+  result.trendResonance = ensureRange(result.trendResonance, 0, 40);
+
+  // === 2. 三周期对齐 (0-35 分) ===
+  // 5m（短期）/ 1h（中期）/ 1d（长期）三级共振，长期 > 中期 > 短期
+  const tf5m = timeframes["5m"];
+  const tf1h = timeframes["1h"];
+  const tf1d = timeframes["1d"];
+
+  function getTfDir(tf: IndicatorSnapshot | undefined): number {
+    if (!tf || tf.price <= 0) return 0;
+    if (tf.ema20 > tf.ema60 && tf.price > tf.ema20) return 1;
+    if (tf.ema20 < tf.ema60 && tf.price < tf.ema20) return -1;
+    return 0;
+  }
+
+  if (tf1h && tf1d && tf1h.price > 0 && tf1d.price > 0) {
+    const dir1h = getTfDir(tf1h);
+    const dir1d = getTfDir(tf1d);
+    const dir5m = getTfDir(tf5m);
+
+    // 评分权重：1d（长期）主导，1h（中期）次之，5m（短期）辅助
+    let score = 0;
+
+    // 1d 长期趋势确立格局（最高权重）
+    if (dir1d !== 0) score += 12;
+    else score += 4;
+
+    // 1h/1d 共振（核心判断）
+    if (dir1h !== 0 && dir1h === dir1d) score += 14;
+    else if (dir1h !== 0 && dir1d !== 0 && dir1h !== dir1d) score += 5;
+    else if (dir1h !== 0) score += 8;
+
+    // 5m 短期确认（只做多场景：5m多头确认加分，空头不扣分但降分）
+    if (dir5m !== 0) {
+      if (dir1h > 0 && dir5m === 1) score += 6; // 短中期共振做多
+      else if (dir1d > 0 && dir5m === 1) score += 4; // 长期多头+短期确认
+      else if (dir1h < 0 && dir5m === -1) score += 0; // 空头共振（系统只做多，不额外加分）
+      else if (dir5m === 1 && dir1h <= 0) score += 3; // 短期先行信号
+      else score += 2; // 方向不一致
+    } else {
+      score += 3; // 5m中性
+    }
+
+    result.timeframeAlignment = ensureRange(score, 0, 35);
+
+    // 斜率共振加分：1d和1h斜率同向额外加分
+    if (tf1h.slope20 * tf1d.slope20 > 0) {
+      result.timeframeAlignment = Math.min(35, result.timeframeAlignment + 3);
+    }
+    // 5m斜率也同向再加1分
+    if (tf5m && tf5m.slope20 * tf1h.slope20 > 0) {
+      result.timeframeAlignment = Math.min(35, result.timeframeAlignment + 2);
+    }
+  } else {
+    result.timeframeAlignment = 15; // 数据不足
+  }
+
+  // === 3. 量价确认 (0-25 分) ===
+  // 量比确认 (0-15)
+  const volumeRatio = current.avgVolume > 0 ? current.volume / current.avgVolume : 1;
+  if (volumeRatio > 1.5) result.volumeConfirmation += 15; // 放量
+  else if (volumeRatio > 1.0) result.volumeConfirmation += 10; // 温和放量
+  else if (volumeRatio > 0.5) result.volumeConfirmation += 5;  // 缩量
+  // 极度缩量（<0.3）扣分，代表无参与意愿
+  if (volumeRatio < 0.3) result.volumeConfirmation = Math.max(0, result.volumeConfirmation - 5);
+
+  // RSI 健康区 (0-10)
+  if (current.rsi14 >= 45 && current.rsi14 <= 65) result.volumeConfirmation += 10; // 健康区间
+  else if ((current.rsi14 >= 35 && current.rsi14 < 45) || (current.rsi14 > 65 && current.rsi14 <= 75)) {
+    result.volumeConfirmation += 5; // 偏强/偏弱
+  }
+  // 极端区域不额外加分（超买超卖不等于反向信号）
+
+  result.volumeConfirmation = ensureRange(result.volumeConfirmation, 0, 25);
+
+  result.total = result.trendResonance + result.timeframeAlignment + result.volumeConfirmation;
+  return result;
+}
+// 信号量并发控制器 — 限制同时进行的 API 请求数，防止触发交易所风控
+class Semaphore {
+  private permits: number;
+  private queue: (() => void)[] = [];
+
+  constructor(maxConcurrent: number) {
+    this.permits = maxConcurrent;
+  }
+
+  async acquire(): Promise<void> {
+    if (this.permits > 0) {
+      this.permits--;
+      return;
+    }
+    return new Promise(resolve => this.queue.push(resolve));
+  }
+
+  release(): void {
+    if (this.queue.length > 0) {
+      this.queue.shift()!();
+    } else {
+      this.permits++;
+    }
+  }
+}
+
+// 全局信号量：最多 4 个并发请求（Gate.io 频率限制友好）
+const apiSemaphore = new Semaphore(4);
+
+/**
+ * P1-1: 增量指标计算缓存
+ * 
+ * 核心思路：当新周期只增加 1 根 K 线时，利用上一周期的中间状态递推更新，
+ * 避免对全量历史数据重新遍历（O(n²) → O(1)）。
+ * 
+ * 支持的递推指标：
+ *   - EMA (20, 50) — 只需上一个 EMA 值
+ *   - RSI (Wilder 7, 14) — 只需上一个 avgGain/avgLoss
+ *   - MACD (12, 26, 9) — 只需上一个 EMA12/EMA26/DEA
+ *   - BOLL (20, 2) — 需要最近 20 个价格（滑动窗口）
+ *   - ADX (14) — 需要最近 14 个 TR/DM 值（滑动窗口）
+/**
+ * 增量指标缓存状态（仅保留核心 8 指标所需）
+ */
+interface IndicatorState {
+  candleCount: number;
+  lastClose: number;
+  timestamp: number;
+  high: number;
+  low: number;
+
+  // EMA 状态 (递推核心)
+  ema20: number;
+  ema60: number;
+  ema120: number;
+  ma200: number;
+
+  // MACD 中间状态
+  ema12: number;
+  ema26: number;
+  dea: number;
+
+  // RSI14 Wilder 平滑
+  rsi14AvgGain: number;
+  rsi14AvgLoss: number;
+
+  // 斜率需要的价格窗口 (最近20个收盘价)
+  closeWindow: number[];
+}
+
+const indicatorCache = new Map<string, IndicatorState>();
+
+/**
+ * 从缓存中递推计算核心指标（仅适用于新增 1 根 K 线的场景）
+ */
+function tryIncrementalIndicators(
+  cacheKey: string,
+  newCandle: { close: number; high: number; low: number; volume: number }
+): any | null {
+  const state = indicatorCache.get(cacheKey);
+  if (!state) return null;
+
+  const { close, high, low, volume } = newCandle;
+
+  // 递推 EMA
+  const k20 = 2 / (20 + 1);
+  const k60 = 2 / (60 + 1);
+  const k120 = 2 / (120 + 1);
+  const newEma20 = state.ema20 + k20 * (close - state.ema20);
+  const newEma60 = state.ema60 + k60 * (close - state.ema60);
+  const newEma120 = state.ema120 + k120 * (close - state.ema120);
+
+  // 递推 MACD
+  const k12 = 2 / (12 + 1);
+  const k26 = 2 / (26 + 1);
+  const kDea = 2 / (9 + 1);
+  const newEma12 = state.ema12 + k12 * (close - state.ema12);
+  const newEma26 = state.ema26 + k26 * (close - state.ema26);
+  const newMacd = newEma12 - newEma26;
+  const newDea = state.dea + kDea * (newMacd - state.dea);
+
+  // 递推 RSI14 (Wilder)
+  const diff = close - state.lastClose;
+  const gain = diff > 0 ? diff : 0;
+  const loss = diff < 0 ? -diff : 0;
+  const newRsi14AvgGain = (state.rsi14AvgGain * 13 + gain) / 14;
+  const newRsi14AvgLoss = (state.rsi14AvgLoss * 13 + loss) / 14;
+  const newRsi14 = newRsi14AvgLoss === 0 ? 100 : 100 - 100 / (1 + newRsi14AvgGain / newRsi14AvgLoss);
+
+  // 更新收盘窗口 (斜率计算)
+  const newCloseWindow = [...state.closeWindow, close].slice(-20);
+
+  // 更新缓存
+  indicatorCache.set(cacheKey, {
+    candleCount: state.candleCount + 1,
+    lastClose: close,
+    timestamp: Date.now(),
+    ema20: newEma20,
+    ema60: newEma60,
+    ema120: newEma120,
+    ma200: state.ma200, // 增量不更新 MA200，保留上次值
+    ema12: newEma12,
+    ema26: newEma26,
+    dea: newDea,
+    rsi14AvgGain: newRsi14AvgGain,
+    rsi14AvgLoss: newRsi14AvgLoss,
+    closeWindow: newCloseWindow,
+    high, low,
+  });
+
+  // 计算斜率
+  const slope20 = calcSlope20(newCloseWindow.length >= 20 ? newCloseWindow : []);
+
+  return {
+    currentPrice: close,
+    ema20: newEma20,
+    ema60: newEma60,
+    ema120: newEma120,
+    ma200: 0, // 增量不计算 MA200，需要全量
+    macd: newMacd,
+    rsi14: Math.max(0, Math.min(100, newRsi14)),
+    volume,
+    avgVolume: 0,
+    slope20,
+  };
+}
+
+/**
+ * 构建增量缓存状态（全量计算后调用）
+ * @returns 完整的指标结果对象
+ */
+function buildIndicatorState(
+  cacheKey: string,
+  closes: number[],
+  highs: number[],
+  lows: number[],
+  volumes: number[]
+): any {
+  if (closes.length < 2) return null;
+
+  const n = closes.length;
+  const ema20 = calcEMA(closes, 20);
+  const ema60 = calcEMA(closes, 60);
+  const ema120 = calcEMA(closes, 120);
+  const ema12 = calcEMA(closes, 12);
+  const ema26 = calcEMA(closes, 26);
+  const macdResult = calcMACD(closes);
+  const rsi14 = calcRSI(closes, 14);
+  const ma200 = calcMA(closes, 200);
+
+  // 从 RSI 反推 avgGain/avgLoss
+  const rs14 = rsi14 >= 100 ? 999 : rsi14 <= 0 ? 0.001 : rsi14 / (100 - rsi14);
+  const lastDiff14 = closes[n - 1] - closes[Math.max(0, n - 15)];
+  const avgLoss14 = Math.abs(lastDiff14) / (rs14 + 1);
+  const avgGain14 = rs14 * avgLoss14;
+
+  // 计算平均成交量
+  const recentVolumes = volumes.slice(-20);
+  let volSum = 0;
+  for (const v of recentVolumes) volSum += v;
+  const avgVol = recentVolumes.length > 0 ? volSum / recentVolumes.length : 0;
+
+  indicatorCache.set(cacheKey, {
+    candleCount: n,
+    lastClose: closes[n - 1],
+    timestamp: Date.now(),
+    ema20,
+    ema60,
+    ema120,
+    ma200,
+    ema12,
+    ema26,
+    dea: macdResult.dea,
+    rsi14AvgGain: avgGain14,
+    rsi14AvgLoss: avgLoss14,
+    closeWindow: closes.slice(-20),
+    high: highs[n - 1],
+    low: lows[n - 1],
+  });
+
+  // 返回完整的指标结果
+  const slope20 = calcSlope20(closes);
+
+  return {
+    currentPrice: closes[n - 1],
+    ema20,
+    ema60,
+    ema120,
+    ma200,
+    macd: macdResult.macd,
+    rsi14,
+    volume: volumes[n - 1] || 0,
+    avgVolume: avgVol,
+    slope20,
+  };
+}
+
+/**
  * 收集所有市场数据（包含多时间框架分析和时序数据）
- * 优化：增加数据验证和错误处理，返回时序数据用于提示词
+ * 优化：Promise.all 并发 K 线获取 + 信号量限流 + 数据验证
  */
 async function collectMarketData() {
   const exchangeClient = createExchangeClient();
   const marketData: Record<string, any> = {};
 
-  for (const symbol of SYMBOLS) {
+  // 并发获取所有 symbol 的市场数据（每个 symbol 内部也并发拉取多时间框架 K 线）
+  const symbolPromises = SYMBOLS.map(async (symbol) => {
     try {
       const contract = `${symbol}_USDT`;
       
@@ -93,14 +450,11 @@ async function collectMarketData() {
       while (retryCount <= maxRetries) {
         try {
           ticker = await exchangeClient.getFuturesTicker(contract);
-          
-          // 验证价格数据有效性
           const price = Number.parseFloat(ticker.last || "0");
           if (price === 0 || !Number.isFinite(price)) {
             throw new Error(`价格无效: ${ticker.last}`);
           }
-          
-          break; // 成功，跳出重试循环
+          break;
         } catch (error) {
           retryCount++;
           if (retryCount > maxRetries) {
@@ -112,30 +466,47 @@ async function collectMarketData() {
         }
       }
       
-      // 获取所有时间框架的K线数据（优化后的配置，确保技术指标准确性）
-      const candles1m = await exchangeClient.getFuturesCandles(contract, "1m", 150);   // 2.5小时，EMA50有充足验证数据
-      const candles3m = await exchangeClient.getFuturesCandles(contract, "3m", 120);   // 6小时，覆盖半个交易日
-      const candles5m = await exchangeClient.getFuturesCandles(contract, "5m", 100);   // 8.3小时，日内趋势分析
-      const candles15m = await exchangeClient.getFuturesCandles(contract, "15m", 96);  // 24小时，完整一天
-      const candles30m = await exchangeClient.getFuturesCandles(contract, "30m", 120); // 2.5天，中期趋势
-      const candles1h = await exchangeClient.getFuturesCandles(contract, "1h", 168);   // 7天完整一周，周级别分析
+      // 并发获取所有时间框架的K线数据（聚焦1h和1d，5m仅用于形态识别）
+      const timeframes = [
+        { interval: "1h" as const, limit: 168 },  // 7天数据
+        { interval: "1d" as const, limit: 90 },   // 90天数据
+        { interval: "5m" as const, limit: 20 },   // 形态识别专用（不参与评分）
+      ] as const;
+
+      const candleResults = await Promise.all(
+        timeframes.map(async (tf) => {
+          await apiSemaphore.acquire();
+          try {
+            const candles = await exchangeClient.getFuturesCandles(contract, tf.interval, tf.limit);
+            return { key: tf.interval, candles };
+          } finally {
+            apiSemaphore.release();
+          }
+        })
+      );
+
+      const candlesMap: Record<string, any[]> = {};
+      for (const r of candleResults) {
+        candlesMap[r.key] = r.candles;
+      }
+
+      const candles1h = candlesMap["1h"] || [];
+      const candles1d = candlesMap["1d"] || [];
+      const candles5m = candlesMap["5m"] || [];  // 形态识别专用
+
+      // 并发计算三级时间框架指标 (5m/1h/1d)
+      const [indicators5m, indicators1h, indicators1d] =
+        await Promise.all([
+          calculateIndicators(candles5m),
+          calculateIndicators(candles1h),
+          calculateIndicators(candles1d),
+        ]);
       
-      // 计算每个时间框架的指标
-      const indicators1m = calculateIndicators(candles1m);
-      const indicators3m = calculateIndicators(candles3m);
-      const indicators5m = calculateIndicators(candles5m);
-      const indicators15m = calculateIndicators(candles15m);
-      const indicators30m = calculateIndicators(candles30m);
-      const indicators1h = calculateIndicators(candles1h);
+      // 主决策指标以1h为准（中长期趋势锚点）
+      const indicators = indicators1h;
       
-      // 计算3分钟时序指标（使用全部60个数据计算，但只显示最近10个数据点）
-      const intradaySeries = calculateIntradaySeries(candles3m);
-      
-      // 计算1小时指标作为更长期上下文
-      const longerTermContext = calculateLongerTermContext(candles1h);
-      
-      // 使用5分钟K线数据作为主要指标（兼容性）
-      const indicators = indicators5m;
+      // 计算 1h 序列数据（用于 EMA 拐头/交叉/破线等转折点检测）
+      const intradaySeries = calculateIntradaySeries(candles1h);
       
       // 验证技术指标有效性和数据完整性
       const dataTimestamp = getChinaTimeISO();
@@ -146,16 +517,12 @@ async function collectMarketData() {
         rsi14: Number.isFinite(indicators.rsi14) && indicators.rsi14 >= 0 && indicators.rsi14 <= 100,
         volume: Number.isFinite(indicators.volume) && indicators.volume >= 0,
         candleCount: {
-          "1m": candles1m.length,
-          "3m": candles3m.length,
-          "5m": candles5m.length,
-          "15m": candles15m.length,
-          "30m": candles30m.length,
-          "1h": candles1h.length,
+          "5m": candles5m?.length ?? 0,
+          "1h": candles1h?.length ?? 0,
+          "1d": candles1d?.length ?? 0,
         }
       };
       
-      // 记录数据质量问题
       const issues: string[] = [];
       if (!dataQuality.price) issues.push("价格无效");
       if (!dataQuality.ema20) issues.push("EMA20无效");
@@ -176,18 +543,14 @@ async function collectMarketData() {
       try {
         const fr = await exchangeClient.getFundingRate(contract);
         fundingRate = Number.parseFloat(fr.r || "0");
-        if (!Number.isFinite(fundingRate)) {
-          fundingRate = 0;
-        }
+        if (!Number.isFinite(fundingRate)) fundingRate = 0;
       } catch (error) {
         logger.warn(`获取 ${symbol} 资金费率失败:`, error as any);
       }
       
-      // 获取未平仓合约（Open Interest）- Gate.io ticker中没有openInterest字段，暂时跳过
       let openInterest = { latest: 0, average: 0 };
-      // Note: Gate.io ticker 数据中没有开放持仓量字段，如需可以使用其他API或外部数据源
       
-      // 将各时间框架指标添加到市场数据
+      // 将各时间框架指标添加到市场数据（仅1h和1d）
       marketData[symbol] = {
         price: Number.parseFloat(ticker.last || "0"),
         change24h: Number.parseFloat(ticker.change_percentage || "0"),
@@ -195,42 +558,66 @@ async function collectMarketData() {
         fundingRate,
         openInterest,
         ...indicators,
-        // 添加时序数据（参照 1.md 格式）
-        intradaySeries,
-        longerTermContext,
-        // 直接添加各时间框架指标
+        ...intradaySeries,  // 序列数据：priceSeries, ema20Series, ema60Series, ema120Series
+        klines5m: candles5m,  // 5m K线序列（形态识别专用）
         timeframes: {
-          "1m": indicators1m,
-          "3m": indicators3m,
           "5m": indicators5m,
-          "15m": indicators15m,
-          "30m": indicators30m,
           "1h": indicators1h,
+          "1d": indicators1d,
         },
       };
       
-      // 保存技术指标到数据库（确保所有数值都是有效的）
+      // === 决策质量评分（聚焦1h和1d，斜率纳入趋势判断） ===
+      const qualityScore = calculateQualityScore(
+        {
+          price: ensureFinite(Number.parseFloat(ticker.last || "0"), 0),
+          ema20: ensureFinite(indicators.ema20),
+          ema60: ensureFinite(indicators.ema60),
+          ema120: ensureFinite(indicators.ema120),
+          ma200: ensureFinite(indicators.ma200),
+          macd: ensureFinite(indicators.macd),
+          rsi14: ensureFinite(indicators.rsi14, 50),
+          volume: ensureFinite(indicators.volume),
+          avgVolume: ensureFinite(indicators.avgVolume),
+          slope20: ensureFinite(indicators.slope20 || 0),
+        },
+        {
+          "5m": { price: indicators5m.currentPrice || 0, ema20: indicators5m.ema20 || 0, ema60: indicators5m.ema60 || 0, ema120: indicators5m.ema120 || 0, ma200: indicators5m.ma200 || 0, macd: indicators5m.macd || 0, rsi14: indicators5m.rsi14 || 50, volume: indicators5m.volume || 0, avgVolume: indicators5m.avgVolume || 0, slope20: indicators5m.slope20 || 0 },
+          "1h": { price: indicators1h.currentPrice || 0, ema20: indicators1h.ema20 || 0, ema60: indicators1h.ema60 || 0, ema120: indicators1h.ema120 || 0, ma200: indicators1h.ma200 || 0, macd: indicators1h.macd || 0, rsi14: indicators1h.rsi14 || 50, volume: indicators1h.volume || 0, avgVolume: indicators1h.avgVolume || 0, slope20: indicators1h.slope20 || 0 },
+          "1d": { price: indicators1d.currentPrice || 0, ema20: indicators1d.ema20 || 0, ema60: indicators1d.ema60 || 0, ema120: indicators1d.ema120 || 0, ma200: indicators1d.ma200 || 0, macd: indicators1d.macd || 0, rsi14: indicators1d.rsi14 || 50, volume: indicators1d.volume || 0, avgVolume: indicators1d.avgVolume || 0, slope20: indicators1d.slope20 || 0 },
+        }
+      );
+      logger.info(`${symbol} 质量评分: ${qualityScore.total}/100 [趋势:${qualityScore.trendResonance} 周期:${qualityScore.timeframeAlignment} 量价:${qualityScore.volumeConfirmation}]`);
+
+      // 保存技术指标到数据库（核心8指标 + 质量评分）
       await dbClient.execute({
         sql: `INSERT INTO trading_signals 
-              (symbol, timestamp, price, ema_20, ema_50, macd, rsi_7, rsi_14, volume, funding_rate)
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              (symbol, timestamp, price, ema_20, ema_60, ema_120, ma_200, macd, rsi_14, rsi_7, volume, avg_volume, slope_20, quality_score, score_components) 
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
-          symbol,
-          getChinaTimeISO(),
-          ensureFinite(marketData[symbol].price),
+          symbol, dataTimestamp,
+          ensureFinite(Number.parseFloat(ticker.last || "0"), 0),
           ensureFinite(indicators.ema20),
-          ensureFinite(indicators.ema50),
+          ensureFinite(indicators.ema60),
+          ensureFinite(indicators.ema120),
+          ensureFinite(indicators.ma200),
           ensureFinite(indicators.macd),
-          ensureFinite(indicators.rsi7, 50), // RSI 默认 50
           ensureFinite(indicators.rsi14, 50),
+          50,  // rsi_7 兼容旧列，固定默认值
           ensureFinite(indicators.volume),
-          ensureFinite(fundingRate),
+          ensureFinite(indicators.avgVolume),
+          ensureFinite(indicators.slope20 || 0),
+          qualityScore.total,
+          JSON.stringify({ resonance: qualityScore.trendResonance, alignment: qualityScore.timeframeAlignment, volume: qualityScore.volumeConfirmation }),
         ],
       });
     } catch (error) {
       logger.error(`收集 ${symbol} 市场数据失败:`, error as any);
     }
-  }
+  });
+
+  // 等待所有 symbol 数据获取完成
+  await Promise.allSettled(symbolPromises);
 
   return marketData;
 }
@@ -292,56 +679,64 @@ async function collectNewsData(): Promise<Record<string, any>> {
 function calculateIntradaySeries(candles: any[]) {
   if (!candles || candles.length === 0) {
     return {
-      midPrices: [],
+      priceSeries: [],
+      volumeSeries: [],
       ema20Series: [],
+      ema60Series: [],
+      ema120Series: [],
       macdSeries: [],
       rsi7Series: [],
       rsi14Series: [],
     };
   }
 
-  // 提取收盘价
   const closes = candles.map((c) => Number.parseFloat(c.c || "0")).filter(n => Number.isFinite(n));
   
   if (closes.length === 0) {
     return {
-      midPrices: [],
+      priceSeries: [],
+      volumeSeries: [],
       ema20Series: [],
+      ema60Series: [],
+      ema120Series: [],
       macdSeries: [],
       rsi7Series: [],
       rsi14Series: [],
     };
   }
 
-  // 计算每个时间点的指标
-  const midPrices = closes;
+  const priceSeries = closes;
+  const volumeSeries: number[] = [];
   const ema20Series: number[] = [];
+  const ema60Series: number[] = [];
+  const ema120Series: number[] = [];
   const macdSeries: number[] = [];
   const rsi7Series: number[] = [];
   const rsi14Series: number[] = [];
 
-  // 为每个数据点计算指标（使用截至该点的所有历史数据）
   for (let i = 0; i < closes.length; i++) {
     const historicalPrices = closes.slice(0, i + 1);
     
-    // EMA20 - 需要至少20个数据点
     ema20Series.push(historicalPrices.length >= 20 ? calcEMA(historicalPrices, 20) : historicalPrices[historicalPrices.length - 1]);
+    ema60Series.push(historicalPrices.length >= 60 ? calcEMA(historicalPrices, 60) : (historicalPrices.length > 1 ? ema60Series[i-1] || closes[i] : closes[i]));
+    ema120Series.push(historicalPrices.length >= 120 ? calcEMA(historicalPrices, 120) : (historicalPrices.length > 1 ? ema120Series[i-1] || closes[i] : closes[i]));
     
-    // MACD - 需要至少26个数据点
-    macdSeries.push(historicalPrices.length >= 26 ? calcMACD(historicalPrices) : 0);
-    
-    // RSI7 - 需要至少8个数据点
+    macdSeries.push(historicalPrices.length >= 26 ? calcMACD(historicalPrices).macd : 0);
     rsi7Series.push(historicalPrices.length >= 8 ? calcRSI(historicalPrices, 7) : 50);
-    
-    // RSI14 - 需要至少15个数据点
     rsi14Series.push(historicalPrices.length >= 15 ? calcRSI(historicalPrices, 14) : 50);
+
+    // 成交量序列
+    const vol = Number.parseFloat(candles[i]?.v || "0");
+    volumeSeries.push(Number.isFinite(vol) ? vol : 0);
   }
 
-  // 只返回最近10个数据点
-  const sliceIndex = Math.max(0, midPrices.length - 10);
+  const sliceIndex = Math.max(0, priceSeries.length - 10);
   return {
-    midPrices: midPrices.slice(sliceIndex),
+    priceSeries: priceSeries.slice(sliceIndex),
+    volumeSeries: volumeSeries.slice(sliceIndex),
     ema20Series: ema20Series.slice(sliceIndex),
+    ema60Series: ema60Series.slice(sliceIndex),
+    ema120Series: ema120Series.slice(sliceIndex),
     macdSeries: macdSeries.slice(sliceIndex),
     rsi7Series: rsi7Series.slice(sliceIndex),
     rsi14Series: rsi14Series.slice(sliceIndex),
@@ -390,7 +785,7 @@ function calculateLongerTermContext(candles: any[]) {
   const recentPoints = Math.min(10, closes.length);
   for (let i = closes.length - recentPoints; i < closes.length; i++) {
     const historicalPrices = closes.slice(0, i + 1);
-    macdSeries.push(calcMACD(historicalPrices));
+    macdSeries.push(historicalPrices.length >= 26 ? calcMACD(historicalPrices).macd : 0);
     rsi14Series.push(calcRSI(historicalPrices, 14));
   }
 
@@ -407,31 +802,33 @@ function calculateLongerTermContext(candles: any[]) {
 }
 
 /**
- * 计算 ATR (Average True Range)
+ * 计算 ATR (Average True Range) — 波动率指标
+ * 周期默认 14，用于衡量市场波动性，辅助止损止盈设置
+ * O(n) Wilder 平滑递推计算
  */
-function calcATR(highs: number[], lows: number[], closes: number[], period: number) {
-  if (highs.length < period + 1 || lows.length < period + 1 || closes.length < period + 1) {
+function calcATR(highs: number[], lows: number[], closes: number[], period: number = 14): number {
+  if (highs.length < 2 || lows.length < 2 || closes.length < 2) {
     return 0;
   }
 
   const trueRanges: number[] = [];
   for (let i = 1; i < highs.length; i++) {
-    const high = highs[i];
-    const low = lows[i];
-    const prevClose = closes[i - 1];
-    
     const tr = Math.max(
-      high - low,
-      Math.abs(high - prevClose),
-      Math.abs(low - prevClose)
+      highs[i] - lows[i],
+      Math.abs(highs[i] - closes[i - 1]),
+      Math.abs(lows[i] - closes[i - 1])
     );
     trueRanges.push(tr);
   }
 
-  // 计算平均
-  const recentTR = trueRanges.slice(-period);
-  const atr = recentTR.reduce((sum, tr) => sum + tr, 0) / recentTR.length;
-  
+  if (trueRanges.length < period) return 0;
+
+  // Wilder 平滑递推
+  let atr = trueRanges.slice(0, period).reduce((a, b) => a + b, 0) / period;
+  for (let i = period; i < trueRanges.length; i++) {
+    atr = (atr * (period - 1) + trueRanges[i]) / period;
+  }
+
   return Number.isFinite(atr) ? atr : 0;
 }
 
@@ -446,38 +843,228 @@ function calcEMA(prices: number[], period: number) {
   return Number.isFinite(ema) ? ema : 0;
 }
 
-// 计算 RSI
+// 计算 MA（简单移动平均）
+function calcMA(prices: number[], period: number): number {
+  if (prices.length === 0) return 0;
+  const slice = prices.slice(-period);
+  let sum = 0;
+  for (const p of slice) sum += p;
+  const ma = sum / slice.length;
+  return Number.isFinite(ma) ? ma : 0;
+}
+
+// 计算最近20个收盘价的线性回归斜率
+function calcSlope20(prices: number[]): number {
+  if (prices.length < 2) return 0;
+  const n = prices.length;
+  let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+  for (let i = 0; i < n; i++) {
+    sumX += i;
+    sumY += prices[i];
+    sumXY += i * prices[i];
+    sumX2 += i * i;
+  }
+  const denom = n * sumX2 - sumX * sumX;
+  if (denom === 0) return 0;
+  const slope = (n * sumXY - sumX * sumY) / denom;
+  return Number.isFinite(slope) ? slope : 0;
+}
+
+// 计算 RSI（Wilder 平滑算法）
+// 修正：原版使用简单平均，不符合标准 RSI 定义
+// Wilder 平滑：后续 avg = (prev * (period-1) + current) / period
 function calcRSI(prices: number[], period: number) {
   if (prices.length < period + 1) return 50; // 数据不足，返回中性值
   
-  let gains = 0;
-  let losses = 0;
-
-  for (let i = prices.length - period; i < prices.length; i++) {
+  // 第一步：计算初始平均涨跌
+  let avgGain = 0;
+  let avgLoss = 0;
+  for (let i = 1; i <= period; i++) {
     const change = prices[i] - prices[i - 1];
-    if (change > 0) gains += change;
-    else losses -= change;
+    if (change > 0) avgGain += change;
+    else avgLoss -= change;
   }
-
-  const avgGain = gains / period;
-  const avgLoss = losses / period;
+  avgGain /= period;
+  avgLoss /= period;
+  
+  // 第二步：Wilder 平滑递推
+  for (let i = period + 1; i < prices.length; i++) {
+    const change = prices[i] - prices[i - 1];
+    const gain = change > 0 ? change : 0;
+    const loss = change < 0 ? -change : 0;
+    avgGain = (avgGain * (period - 1) + gain) / period;
+    avgLoss = (avgLoss * (period - 1) + loss) / period;
+  }
   
   if (avgLoss === 0) return avgGain > 0 ? 100 : 50;
   
   const rs = avgGain / avgLoss;
   const rsi = 100 - 100 / (1 + rs);
   
-  // 确保RSI在0-100范围内
   return ensureRange(rsi, 0, 100, 50);
 }
 
-// 计算 MACD
-function calcMACD(prices: number[]) {
-  if (prices.length < 26) return 0; // 数据不足
-  const ema12 = calcEMA(prices, 12);
-  const ema26 = calcEMA(prices, 26);
-  const macd = ema12 - ema26;
-  return Number.isFinite(macd) ? macd : 0;
+// 计算 MACD（完整版：MACD线 + DEA信号线 + Histogram）
+interface MACDResult {
+  macd: number;   // DIF: EMA12 - EMA26
+  dea: number;    // DEA/Signal: EMA9 of MACD
+  histogram: number; // (MACD - DEA) * 2
+}
+
+function calcMACD(prices: number[]): MACDResult {
+  const empty: MACDResult = { macd: 0, dea: 0, histogram: 0 };
+  if (prices.length < 26) return empty;
+  
+  // O(n) 单次遍历计算 EMA12, EMA26, MACD序列, EMA9(MACD)
+  const k12 = 2 / (12 + 1);
+  const k26 = 2 / (26 + 1);
+  const k9 = 2 / (9 + 1);
+  
+  let ema12 = prices[0];
+  let ema26 = prices[0];
+  let emaMacd = 0;
+  let macdSeriesInit = false;
+  
+  let lastMacd = 0;
+  
+  for (let i = 1; i < prices.length; i++) {
+    ema12 = prices[i] * k12 + ema12 * (1 - k12);
+    ema26 = prices[i] * k26 + ema26 * (1 - k26);
+    const macdVal = ema12 - ema26;
+    
+    if (i >= 26) {
+      if (!macdSeriesInit) {
+        emaMacd = macdVal;
+        macdSeriesInit = true;
+      } else {
+        emaMacd = macdVal * k9 + emaMacd * (1 - k9);
+      }
+    }
+    lastMacd = macdVal;
+  }
+  
+  const macd = lastMacd;
+  const dea = macdSeriesInit ? emaMacd : macd;
+  const histogram = (macd - dea) * 2;
+  
+  return {
+    macd: Number.isFinite(macd) ? macd : 0,
+    dea: Number.isFinite(dea) ? dea : macd,
+    histogram: Number.isFinite(histogram) ? histogram : 0,
+  };
+}
+
+/**
+ * 计算 ADX (Average Directional Index) — 趋势强度指标
+ * 周期默认 14，ADX > 25 表示强趋势，< 20 表示震荡
+ */
+function calcADX(highs: number[], lows: number[], closes: number[], period: number = 14): number {
+  if (highs.length < period + 1 || lows.length < period + 1 || closes.length < period + 1) {
+    return 0;
+  }
+  
+  const plusDM: number[] = [];
+  const minusDM: number[] = [];
+  const trueRanges: number[] = [];
+  
+  for (let i = 1; i < highs.length; i++) {
+    const highDiff = highs[i] - highs[i - 1];
+    const lowDiff = lows[i - 1] - lows[i];
+    const tr = Math.max(
+      highs[i] - lows[i],
+      Math.abs(highs[i] - closes[i - 1]),
+      Math.abs(lows[i] - closes[i - 1])
+    );
+    trueRanges.push(tr);
+    
+    // +DM / -DM 计算
+    if (highDiff > lowDiff && highDiff > 0) {
+      plusDM.push(highDiff);
+    } else {
+      plusDM.push(0);
+    }
+    if (lowDiff > highDiff && lowDiff > 0) {
+      minusDM.push(lowDiff);
+    } else {
+      minusDM.push(0);
+    }
+  }
+  
+  if (trueRanges.length < period) return 0;
+  
+  // Wilder 平滑 +DI, -DI
+  let smoothATR = trueRanges.slice(0, period).reduce((a, b) => a + b, 0);
+  let smoothPDM = plusDM.slice(0, period).reduce((a, b) => a + b, 0);
+  let smoothMDM = minusDM.slice(0, period).reduce((a, b) => a + b, 0);
+  
+  const dxValues: number[] = [];
+  for (let i = period; i < trueRanges.length; i++) {
+    if (smoothATR === 0) {
+      dxValues.push(0);
+    } else {
+      const plusDI = (smoothPDM / smoothATR) * 100;
+      const minusDI = (smoothMDM / smoothATR) * 100;
+      const diSum = plusDI + minusDI;
+      if (diSum === 0) {
+        dxValues.push(0);
+      } else {
+        dxValues.push(Math.abs(plusDI - minusDI) / diSum * 100);
+      }
+    }
+    
+    // Wilder 平滑递推
+    smoothATR = smoothATR - smoothATR / period + trueRanges[i];
+    smoothPDM = smoothPDM - smoothPDM / period + plusDM[i];
+    smoothMDM = smoothMDM - smoothMDM / period + minusDM[i];
+  }
+  
+  if (dxValues.length < period) return 0;
+  
+  // ADX = EMA of DX
+  const adx = calcEMA(dxValues, period);
+  return Number.isFinite(adx) ? adx : 0;
+}
+
+/**
+ * 计算布林带 BOLL (Bollinger Bands)
+ * 默认参数：period=20, multiplier=2
+ * 返回 { upper, middle, lower, bandwidth, percentB }
+ */
+interface BOLLResult {
+  upper: number;     // 上轨
+  middle: number;    // 中轨 (SMA20)
+  lower: number;     // 下轨
+  bandwidth: number; // 带宽 (upper-lower)/middle * 100
+  percentB: number;  // %B 指标
+}
+
+function calcBOLL(prices: number[], period: number = 20, multiplier: number = 2): BOLLResult {
+  const empty: BOLLResult = { upper: 0, middle: 0, lower: 0, bandwidth: 0, percentB: 0 };
+  if (prices.length < period) return empty;
+  
+  const slice = prices.slice(-period);
+  const sma = slice.reduce((a, b) => a + b, 0) / period;
+  
+  if (!Number.isFinite(sma)) return empty;
+  
+  const variance = slice.reduce((sum, p) => sum + Math.pow(p - sma, 2), 0) / period;
+  const stdDev = Math.sqrt(variance);
+  
+  if (!Number.isFinite(stdDev)) return empty;
+  
+  const upper = sma + multiplier * stdDev;
+  const lower = sma - multiplier * stdDev;
+  const bandwidth = sma !== 0 ? ((upper - lower) / sma) * 100 : 0;
+  const currentPrice = prices[prices.length - 1];
+  const percentB = upper !== lower ? ((currentPrice - lower) / (upper - lower)) : 0.5;
+  
+  return {
+    upper,
+    middle: sma,
+    lower,
+    bandwidth: Number.isFinite(bandwidth) ? bandwidth : 0,
+    percentB: Number.isFinite(percentB) ? ensureRange(percentB, 0, 1, 0.5) : 0.5,
+  };
 }
 
 /**
@@ -495,74 +1082,89 @@ function calcMACD(prices: number[]) {
  * }
  */
 function calculateIndicators(candles: any[]) {
-  if (!candles || candles.length === 0) {
-    return {
-      currentPrice: 0,
-      ema20: 0,
-      ema50: 0,
-      macd: 0,
-      rsi7: 50,
-      rsi14: 50,
-      volume: 0,
-      avgVolume: 0,
-    };
-  }
+  const empty = () => ({
+    currentPrice: 0, ema20: 0, ema60: 0, ema120: 0, ma200: 0,
+    macd: 0, rsi14: 50, volume: 0, avgVolume: 0, slope20: 0,
+  });
 
-  // 处理对象格式的K线数据（Gate.io API返回的是对象，不是数组）
+  if (!candles || candles.length === 0) return empty();
+
+  // 处理对象格式的K线数据
   const closes = candles
     .map((c) => {
-      // 如果是对象格式（FuturesCandlestick）
-      if (c && typeof c === 'object' && 'c' in c) {
-        return Number.parseFloat(c.c);
-      }
-      // 如果是数组格式（兼容旧代码）
-      if (Array.isArray(c)) {
-        return Number.parseFloat(c[2]);
-      }
+      if (c && typeof c === 'object' && 'c' in c) return Number.parseFloat(c.c);
+      if (Array.isArray(c)) return Number.parseFloat(c[2]);
       return NaN;
     })
     .filter(n => Number.isFinite(n));
 
   const volumes = candles
     .map((c) => {
-      // 如果是对象格式（FuturesCandlestick）
       if (c && typeof c === 'object' && 'v' in c) {
         const vol = Number.parseFloat(c.v);
-        // 验证成交量：必须是有限数字且非负
         return Number.isFinite(vol) && vol >= 0 ? vol : 0;
       }
-      // 如果是数组格式（兼容旧代码）
       if (Array.isArray(c)) {
         const vol = Number.parseFloat(c[1]);
         return Number.isFinite(vol) && vol >= 0 ? vol : 0;
       }
       return 0;
     })
-    .filter(n => n >= 0); // 过滤掉负数成交量
+    .filter(n => n >= 0);
 
-  if (closes.length === 0 || volumes.length === 0) {
-    return {
-      currentPrice: 0,
-      ema20: 0,
-      ema50: 0,
-      macd: 0,
-      rsi7: 50,
-      rsi14: 50,
-      volume: 0,
-      avgVolume: 0,
-    };
-  }
+  if (closes.length === 0) return empty();
+
+  // 核心均线组：EMA 20/60/120 + MA200牛熊线
+  const ema20 = calcEMA(closes, 20);
+  const ema60 = calcEMA(closes, 60);
+  const ema120 = calcEMA(closes, 120);
+  // MA200: 简单移动平均，需要至少200根K线
+  const ma200 = closes.length >= 200
+    ? closes.slice(-200).reduce((a, b) => a + b, 0) / 200
+    : 0;
+
+  // MACD (12,26,9)
+  const macdResult = calcMACD(closes);
+
+  // RSI14
+  const rsi14 = calcRSI(closes, 14);
+
+  // 斜率：最近20根K线的线性回归斜率%
+  const slope20 = calculateSlopePercent(closes.slice(-20));
 
   return {
     currentPrice: ensureFinite(closes.at(-1) || 0),
-    ema20: ensureFinite(calcEMA(closes, 20)),
-    ema50: ensureFinite(calcEMA(closes, 50)),
-    macd: ensureFinite(calcMACD(closes)),
-    rsi7: ensureRange(calcRSI(closes, 7), 0, 100, 50),
-    rsi14: ensureRange(calcRSI(closes, 14), 0, 100, 50),
+    ema20: ensureFinite(ema20),
+    ema60: ensureFinite(ema60),
+    ema120: ensureFinite(ema120),
+    ma200: ensureFinite(ma200),
+    macd: ensureFinite(macdResult.macd),
+    rsi14: ensureRange(rsi14, 0, 100, 50),
     volume: ensureFinite(volumes.at(-1) || 0),
     avgVolume: ensureFinite(volumes.length > 0 ? volumes.reduce((a, b) => a + b, 0) / volumes.length : 0),
+    slope20: ensureFinite(slope20),
   };
+}
+
+/**
+ * 计算线性回归斜率（百分比）
+ * 基于最小二乘法，返回每单位x的y变化率相对于y均值的百分比
+ */
+function calculateSlopePercent(values: number[]): number {
+  if (values.length < 2) return 0;
+  const n = values.length;
+  let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
+  for (let i = 0; i < n; i++) {
+    sumX += i;
+    sumY += values[i];
+    sumXY += i * values[i];
+    sumX2 += i * i;
+  }
+  const denom = n * sumX2 - sumX * sumX;
+  if (denom === 0) return 0;
+  const slope = (n * sumXY - sumX * sumY) / denom;
+  const meanY = sumY / n;
+  return meanY !== 0 ? (slope / meanY) * 100 : 0;
 }
 
 /**
@@ -662,9 +1264,63 @@ async function getAccountInfo() {
     // totalBalance 直接使用 account.total（不包含未实现盈亏）
     const totalBalance = accountTotal;
     
+    // 资产归0检测与策略重置
+    // 当净值跌到初始资金的 5% 以下时，视为当前策略失败
+    // 重置初始/峰值基准，从当前净值重新开始，不继承历史回撤
+    const STRATEGY_RESET_THRESHOLD = 0.05; // 5% 阈值
+    let strategyReset = false;
+    let effectiveInitialBalance = initialBalance;
+    let effectivePeakBalance = peakBalance;
+    
+    if (totalBalance > 0 && totalBalance <= initialBalance * STRATEGY_RESET_THRESHOLD) {
+      logger.warn(`⚠️ 策略重置触发: 当前净值 ${totalBalance.toFixed(2)} USDT ≤ 初始资金 ${initialBalance.toFixed(2)} USDT 的 ${STRATEGY_RESET_THRESHOLD * 100}%，视为策略失败，重置基准`);
+      effectiveInitialBalance = totalBalance;
+      effectivePeakBalance = totalBalance;
+      strategyReset = true;
+
+      // 清理旧的历史记录，避免前端回撤计算仍基于旧的 1000 USDT 峰值
+      // 删除所有 account_history，只保留一条新基准记录
+      const dbClient = createClient({
+        url: process.env.DATABASE_URL || "file:./.voltagent/trading.db",
+      });
+      await dbClient.execute("DELETE FROM account_history");
+      await dbClient.execute({
+        sql: `INSERT INTO account_history
+              (timestamp, total_value, available_cash, unrealized_pnl, realized_pnl, return_percent)
+              VALUES (?, ?, ?, ?, ?, ?)`,
+        args: [
+          getChinaTimeISO(),
+          totalBalance,
+          totalBalance, // 重置后可用 = 总资产（无持仓）
+          0,
+          0,
+          0,
+        ],
+      });
+      dbClient.close();
+      logger.info(`✅ 历史账户记录已清理，新基准: ${totalBalance.toFixed(2)} USDT`);
+
+      // 同步更新 .env 中的 INITIAL_BALANCE，避免下次重启时 init.ts 插回旧值
+      try {
+        const envPath = process.env.DOTENV_CONFIG_PATH || ".env";
+        const fs = await import("fs/promises");
+        let envContent = await fs.readFile(envPath, "utf-8");
+        const balanceRegex = /^INITIAL_BALANCE=.*$/m;
+        if (balanceRegex.test(envContent)) {
+          envContent = envContent.replace(balanceRegex, `INITIAL_BALANCE=${totalBalance.toFixed(2)}`);
+        } else {
+          envContent += `\nINITIAL_BALANCE=${totalBalance.toFixed(2)}\n`;
+        }
+        await fs.writeFile(envPath, envContent, "utf-8");
+        logger.info(`✅ .env INITIAL_BALANCE 已更新: ${totalBalance.toFixed(2)} USDT`);
+      } catch (envErr) {
+        logger.warn(`⚠️ 更新 .env 失败: ${(envErr as Error).message}`);
+      }
+    }
+    
     // 实时收益率 = (总资产 - 初始资金) / 初始资金 * 100
-    // 总资产不包含未实现盈亏，收益率反映已实现盈亏
-    const returnPercent = ((totalBalance - initialBalance) / initialBalance) * 100;
+    // 策略重置后，收益率从 0% 重新开始
+    const returnPercent = ((totalBalance - effectiveInitialBalance) / effectiveInitialBalance) * 100;
     
     // 计算 Sharpe Ratio
     const sharpeRatio = await calculateSharpeRatio();
@@ -673,10 +1329,11 @@ async function getAccountInfo() {
       totalBalance,      // 总资产（不包含未实现盈亏）
       availableBalance,  // 可用余额
       unrealisedPnl,     // 未实现盈亏
-      returnPercent,     // 收益率（不包含未实现盈亏）
+      returnPercent,     // 收益率（策略重置后从 0% 开始）
       sharpeRatio,       // 夏普比率
-      initialBalance,    // 初始净值（用于计算回撤）
-      peakBalance,       // 峰值净值（用于计算回撤）
+      initialBalance: effectiveInitialBalance,    // 初始净值（策略重置后为当前净值）
+      peakBalance: effectivePeakBalance,          // 峰值净值（策略重置后为当前净值）
+      strategyReset,     // 是否触发了策略重置
     };
   } catch (error) {
     logger.error("获取账户信息失败:", error as any);
@@ -712,7 +1369,7 @@ async function syncPositionsFromGate(cachedPositions?: any[]) {
     );
     
     // 检查 Gate.io 是否有持仓（可能 API 有延迟）
-    const activeGatePositions = gatePositions.filter((p: any) => Number.parseInt(p.size || "0") !== 0);
+    const activeGatePositions = gatePositions.filter((p: any) => Number.parseFloat(p.size || "0") !== 0);
     
     // 如果 Gate.io 返回0个持仓但数据库有持仓，可能是 API 延迟，不清空数据库
     if (activeGatePositions.length === 0 && dbResult.rows.length > 0) {
@@ -725,7 +1382,7 @@ async function syncPositionsFromGate(cachedPositions?: any[]) {
     let syncedCount = 0;
     
     for (const pos of gatePositions) {
-      const size = Number.parseInt(pos.size || "0");
+      const size = Number.parseFloat(pos.size || "0");
       if (size === 0) continue;
       
       const symbol = pos.contract.replace("_USDT", "");
@@ -790,7 +1447,7 @@ async function syncPositionsFromGate(cachedPositions?: any[]) {
       syncedCount++;
     }
     
-    const activeGatePositionsCount = gatePositions.filter((p: any) => Number.parseInt(p.size || "0") !== 0).length;
+    const activeGatePositionsCount = gatePositions.filter((p: any) => Number.parseFloat(p.size || "0") !== 0).length;
     if (activeGatePositionsCount > 0 && syncedCount === 0) {
       logger.error(`Gate.io 有 ${activeGatePositionsCount} 个持仓，但数据库同步失败！`);
     }
@@ -830,9 +1487,9 @@ async function getPositions(cachedGatePositions?: any[]) {
     
     // 过滤并格式化持仓
     const positions = gatePositions
-      .filter((p: any) => Number.parseInt(p.size || "0") !== 0)
+      .filter((p: any) => Number.parseFloat(p.size || "0") !== 0)
       .map((p: any) => {
-        const size = Number.parseInt(p.size || "0");
+        const size = Number.parseFloat(p.size || "0");
         const symbol = p.contract.replace("_USDT", "");
         
         // 从数据库读取开仓时间、峰值盈利和杠杆数
@@ -964,6 +1621,37 @@ async function getRecentDecisions(limit: number = 3) {
     }));
   } catch (error) {
     logger.error("获取最近决策记录失败:", error as any);
+    return [];
+  }
+}
+
+/**
+ * 获取最近N次的信号质量评分记录
+ */
+async function getRecentQualityScores(limit: number = 5) {
+  try {
+    const result = await dbClient.execute({
+      sql: `SELECT timestamp, symbol, price, quality_score, score_components 
+            FROM trading_signals 
+            WHERE quality_score IS NOT NULL AND quality_score > 0
+            ORDER BY timestamp DESC 
+            LIMIT ?`,
+      args: [limit],
+    });
+    
+    if (!result.rows || result.rows.length === 0) {
+      return [];
+    }
+    
+    return result.rows.reverse().map((row: any) => ({
+      timestamp: row.timestamp,
+      symbol: row.symbol,
+      price: Number.parseFloat(row.price || "0"),
+      qualityScore: Number.parseFloat(row.quality_score || "0"),
+      components: row.score_components ? JSON.parse(row.score_components) : null,
+    }));
+  } catch (error) {
+    logger.error("获取最近质量评分失败:", error as any);
     return [];
   }
 }
@@ -1116,7 +1804,7 @@ async function closeAllPositions(reason: string): Promise<void> {
     logger.warn(`清仓所有持仓，原因: ${reason}`);
     
     const positions = await exchangeClient.getPositions();
-    const activePositions = positions.filter((p: any) => Number.parseInt(p.size || "0") !== 0);
+    const activePositions = positions.filter((p: any) => Number.parseFloat(p.size || "0") !== 0);
     
     if (activePositions.length === 0) {
       return;
@@ -1629,6 +2317,14 @@ async function executeTradingDecision() {
       // 不影响主流程，继续执行
     }
     
+    // 8b. 获取最近信号质量评分（最近5次）
+    let recentQualityScores: any[] = [];
+    try {
+      recentQualityScores = await getRecentQualityScores(5);
+    } catch (error) {
+      logger.warn("获取最近质量评分失败:", error as any);
+    }
+    
     // 9. 生成提示词并调用 Agent
     const prompt = generateTradingPrompt({
       minutesElapsed,
@@ -1640,6 +2336,7 @@ async function executeTradingDecision() {
       positions,
       tradeHistory,
       recentDecisions,
+      recentQualityScores,
       positionCount: positions.length,
     });
     
@@ -1738,12 +2435,49 @@ async function executeTradingDecision() {
       logger.info("=".repeat(80));
       logger.info(decisionText || "无决策输出");
       logger.info("=".repeat(80) + "\n");
-      
-      // 保存决策记录
+
+      // 解析结构化决策 JSON
+      let structuredDecision: StructuredDecision | null = null;
+      let decisionSummary = "";
+      try {
+        structuredDecision = extractDecisionJSON(decisionText);
+        if (structuredDecision) {
+          // 注入当前周期技术指标数据（使用 BTC 作为主指标）
+          const mainSymbol = "BTC";
+          const md = marketData[mainSymbol] || {};
+          (structuredDecision as any).indicators = {
+            rsi: md.rsi14,
+            macd: md.macd,
+            dea: md.macdSignal,
+            histogram: md.macdHistogram,
+            adx: md.adx14,
+            ema20: md.ema20,
+            ema50: md.ema50,
+            bollUpper: md.bollUpper,
+            bollMid: md.bollMiddle,
+            bollLower: md.bollLower,
+            price: md.price,
+            volume: md.volume,
+            timestamp: getChinaTimeISO(),
+          };
+          
+          decisionSummary = decisionToSummary(structuredDecision);
+          logger.info("【结构化决策解析成功】");
+          logger.info(decisionSummary);
+          logger.info(`动作: ${structuredDecision.decision.action} | 置信度: ${(structuredDecision.decision.confidence * 100).toFixed(0)}%`);
+          logger.info(`趋势: ${structuredDecision.market_analysis.trend} | 风险: ${structuredDecision.risk_assessment.risk_level}`);
+        } else {
+          logger.warn("未能从 AI 回复中提取结构化决策 JSON");
+        }
+      } catch (err) {
+        logger.warn(`结构化决策解析异常: ${err}`);
+      }
+
+      // 保存决策记录（含结构化数据）
       await dbClient.execute({
         sql: `INSERT INTO agent_decisions 
-              (timestamp, iteration, market_analysis, decision, actions_taken, account_value, positions_count)
-              VALUES (?, ?, ?, ?, ?, ?, ?)`,
+              (timestamp, iteration, market_analysis, decision, actions_taken, account_value, positions_count, structured_decision)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
           getChinaTimeISO(),
           iterationCount,
@@ -1752,6 +2486,7 @@ async function executeTradingDecision() {
           "[]",
           accountInfo.totalBalance,
           positions.length,
+          structuredDecision ? JSON.stringify(structuredDecision) : null,
         ],
       });
       

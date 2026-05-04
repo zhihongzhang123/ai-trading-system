@@ -161,7 +161,7 @@ export const openPositionTool = createTool({
       
       // 1. 检查持仓数量（最多5个）
       const allPositions = await client.getPositions();
-      const activePositions = allPositions.filter((p: any) => Math.abs(Number.parseInt(p.size || "0")) !== 0);
+      const activePositions = allPositions.filter((p: any) => Math.abs(Number.parseFloat(p.size || "0")) !== 0);
       
       if (activePositions.length >= RISK_PARAMS.MAX_POSITIONS) {
         return {
@@ -177,7 +177,7 @@ export const openPositionTool = createTool({
       });
       
       if (existingPosition) {
-        const existingSize = Number.parseInt(existingPosition.size || "0");
+        const existingSize = Number.parseFloat(existingPosition.size || "0");
         const existingSide = existingSize > 0 ? "long" : "short";
         
         if (existingSide !== side) {
@@ -269,7 +269,7 @@ export const openPositionTool = createTool({
       // 6. 检查总敞口（不超过账户净值的15倍）
       let currentTotalExposure = 0;
       for (const pos of activePositions) {
-        const posSize = Math.abs(Number.parseInt(pos.size || "0"));
+        const posSize = Math.abs(Number.parseFloat(pos.size || "0"));
         const entryPrice = Number.parseFloat(pos.entryPrice || "0");
         const posLeverage = Number.parseInt(pos.leverage || "1");
         // 获取合约乘数
@@ -303,7 +303,7 @@ export const openPositionTool = createTool({
       if (currentStrategyParams.maxTotalMarginPercent) {
         let currentTotalMargin = 0;
         for (const pos of activePositions) {
-          const posSize = Math.abs(Number.parseInt(pos.size || "0"));
+          const posSize = Math.abs(Number.parseFloat(pos.size || "0"));
           const entryPrice = Number.parseFloat(pos.entryPrice || "0");
           const posLeverage = Number.parseInt(pos.leverage || "1");
           const posQuantoMult = await getQuantoMultiplier(pos.contract);
@@ -525,7 +525,7 @@ export const openPositionTool = createTool({
           try {
             const orderDetail = await client.getOrder(order.id.toString());
             finalOrderStatus = orderDetail.status;
-            actualFillSize = Math.abs(Number.parseInt(orderDetail.size || "0") - Number.parseInt(orderDetail.left || "0"));
+            actualFillSize = Math.abs(Number.parseFloat(orderDetail.size || "0") - Number.parseInt(orderDetail.left || "0"));
             
             //  获取实际成交价格（fill_price 或 average price）
             if (orderDetail.fill_price && Number.parseFloat(orderDetail.fill_price) > 0) {
@@ -639,9 +639,9 @@ export const openPositionTool = createTool({
 
           // 在双向持仓模式下，需要过滤掉 size=0 的记录，找到实际持仓
           const gatePosition = positions.find((p: any) => p.contract === contract
-              && Number.parseInt(p.size || "0") !== 0);
+              && Number.parseFloat(p.size || "0") !== 0);
           if (gatePosition) {
-            gatePositionSize = Number.parseInt(gatePosition.size || "0");
+            gatePositionSize = Number.parseFloat(gatePosition.size || "0");
             
             if (gatePositionSize !== 0) {
               if (gatePosition.liq_price) {
@@ -924,7 +924,7 @@ export const closePositionTool = createTool({
           try {
             const orderDetail = await client.getOrder(order.id.toString());
             finalOrderStatus = orderDetail.status;
-            const filled = Math.abs(Number.parseInt(orderDetail.size || "0") - Number.parseInt(orderDetail.left || "0"));
+            const filled = Math.abs(Number.parseFloat(orderDetail.size || "0") - Number.parseInt(orderDetail.left || "0"));
             
             if (filled > 0) {
               actualCloseSize = filled;

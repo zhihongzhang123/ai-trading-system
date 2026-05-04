@@ -16,7 +16,7 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import type { StrategyParams, StrategyPromptContext } from "./types";
+import type { StrategyParams, StrategyPromptContext } from "./types.js";
 
 /**
  * 平衡策略配置
@@ -103,10 +103,10 @@ export function getBalancedStrategy(maxLeverage: number): StrategyParams {
     //   - enableCodeLevelProtection = true：代码自动执行（每10秒检查，partialProfitMonitor.ts）
     //   - enableCodeLevelProtection = false：AI根据此配置主动判断和执行
     partialTakeProfit: {
-      // 平衡策略：标准分批止盈，逐步锁定利润
-      stage1: { trigger: 30, closePercent: 50 },   // +30%时平仓50%（锁定部分利润）
-      stage2: { trigger: 40, closePercent: 50 },   // +40%时平仓剩余50%（累计平100%）
-      stage3: { trigger: 50, closePercent: 100 },  // +50%时全部清仓（防止利润回吐）
+      // 盈利≥70%才开始分批止盈，让利润充分奔跑
+      stage1: { trigger: 70, closePercent: 30 },   // +70%时平仓30%（首次收割）
+      stage2: { trigger: 80, closePercent: 70 },   // +80%时累计平仓70%（再平40%）
+      stage3: { trigger: 90, closePercent: 100 },  // +90%时全部清仓（利润落袋）
     },
     
     // ==================== 峰值回撤保护 ====================

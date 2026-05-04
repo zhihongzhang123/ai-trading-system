@@ -16,7 +16,7 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import type { StrategyParams, StrategyPromptContext } from "./types";
+import type { StrategyParams, StrategyPromptContext } from "./types.js";
 
 /**
  * 稳健策略配置
@@ -103,10 +103,10 @@ export function getConservativeStrategy(maxLeverage: number): StrategyParams {
     //   - enableCodeLevelProtection = true：代码自动执行（每10秒检查，partialProfitMonitor.ts）
     //   - enableCodeLevelProtection = false：AI根据此配置主动判断和执行
     partialTakeProfit: {
-      // 保守策略：较早分批止盈，提前锁定利润
-      stage1: { trigger: 20, closePercent: 50 },   // +20%时平仓50%（较早锁定）
-      stage2: { trigger: 30, closePercent: 50 },   // +30%时平仓剩余50%（累计平100%）
-      stage3: { trigger: 40, closePercent: 100 },  // +40%时全部清仓（防止利润回吐）
+      // 盈利≥70%才开始分批止盈，让利润充分奔跑
+      stage1: { trigger: 70, closePercent: 30 },   // +70%时平仓30%（首次收割）
+      stage2: { trigger: 80, closePercent: 70 },   // +80%时累计平仓70%（再平40%）
+      stage3: { trigger: 90, closePercent: 100 },  // +90%时全部清仓（利润落袋）
     },
     
     // ==================== 峰值回撤保护 ====================
@@ -181,6 +181,17 @@ export function generateConservativePrompt(params: StrategyParams, context: Stra
 - 正确识别行情类型，调整交易策略（优先看长周期）
 - 耐心等待高质量机会，不要强行交易（长周期无趋势时观望）
 - 宁可错过机会，也不冒险
+
+【技术面止盈信号】（持仓期间持续监控，出现任一触发AI综合评估）：
+- 1d（日线）出现顶部构造（双顶/M头/头肩顶/顶背离/EMA20拐头向下/长上影线）→ 不是立即平仓！需结合市场情绪（极度贪婪/恐惧）、量价关系（放量滞涨）、消息面（利好满天飞散户追涨）、技术指标（RSI超买/MACD死叉）、均线结构（趋势是否完好）综合判断
+  · 多项信号共振 → 全部或大部分平仓
+  · 仅形态预警但趋势完好 → 继续持有但收紧止损
+- 20/60/120均线开始出现空头排列（EMA20下穿EMA60死叉，EMA60拐头向下）→ 1d级别应当全部平仓，1h级别至少减仓50%，但AI仍需结合盈利水平和市场结构做最终裁决
+
+【分批止盈】（盈利≥70%才启动，让利润充分奔跑）：
+- 盈利≥+70% → 平仓30%（首次收割，锁定部分利润）
+- 盈利≥+80% → 再平40%（累计平仓70%，大部分利润落袋）
+- 盈利≥+90% → 全部清仓（100%落袋，不留尾仓）
 `;
 }
 

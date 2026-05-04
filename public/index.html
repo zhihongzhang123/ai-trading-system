@@ -5,7 +5,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
   <meta name="theme-color" content="#000000">
-  <title>AI Trading - BTC 实时交易监控</title>
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+  <title>Pulse Trading - 实时交易监控</title>
   <link rel="stylesheet" href="monitor-styles.css">
 </head>
 
@@ -18,197 +21,411 @@
   <!-- Header -->
   <header class="header">
     <div class="nav-bar">
-      <div class="logo">AI Trading</div>
+      <div class="logo">Pulse Trading</div>
       <nav class="nav-menu">
         <span class="nav-link active" id="status-indicator">LIVE</span>
+        <span class="nav-link" id="cycle-display">周期 #0</span>
+        <span class="nav-link" id="last-update">--:--:--</span>
       </nav>
     </div>
   </header>
 
-  <!-- Crypto Price Ticker (BTC only) -->
-  <div class="ticker-wrapper">
-    <div class="ticker-content" id="ticker">
-      <div class="ticker-item">
-        <span class="crypto-name">BTC</span>
-        <span class="crypto-price" data-symbol="BTC">$95,000.00</span>
-      </div>
-      <div class="ticker-item">
-        <span class="crypto-name">BTC</span>
-        <span class="crypto-price" data-symbol="BTC">$95,000.00</span>
-      </div>
-      <div class="ticker-item">
-        <span class="crypto-name">BTC</span>
-        <span class="crypto-price" data-symbol="BTC">$95,000.00</span>
-      </div>
-      <div class="ticker-item">
-        <span class="crypto-name">BTC</span>
-        <span class="crypto-price" data-symbol="BTC">$95,000.00</span>
-      </div>
-      <div class="ticker-item">
-        <span class="crypto-name">BTC</span>
-        <span class="crypto-price" data-symbol="BTC">$95,000.00</span>
-      </div>
-      <div class="ticker-item">
-        <span class="crypto-name">BTC</span>
-        <span class="crypto-price" data-symbol="BTC">$95,000.00</span>
-      </div>
-    </div>
-  </div>
+  <!-- Main 3-Column Dashboard -->
+  <main class="dashboard">
 
-  <!-- Main Content -->
-  <main class="main-content">
-    <!-- Account Equity Curve Section -->
-    <section class="chart-section">
-      <div class="chart-header">
-        <h3 class="chart-title">资产曲线</h3>
-      </div>
-      <div class="chart-container">
-        <canvas id="equityChart"></canvas>
-      </div>
+    <!-- =================== 左栏：市场数据 =================== -->
+    <aside class="col-left">
+
+      <!-- 技术指标面板 -->
+      <section class="panel panel-indicators">
+        <div class="panel-header">
+          <h3>技术指标</h3>
+          <span class="panel-badge" id="indicator-symbol">BTC</span>
+        </div>
+        <div class="indicators-grid" id="indicators-grid">
+          <!-- 当前价 -->
+          <div class="indicator-card">
+            <span class="indicator-label">当前价</span>
+            <span class="indicator-value" id="ind-price">--</span>
+          </div>
+          <!-- EMA20 -->
+          <div class="indicator-card">
+            <span class="indicator-label">EMA20</span>
+            <span class="indicator-value" id="ind-ema20">--</span>
+          </div>
+          <!-- EMA60 -->
+          <div class="indicator-card">
+            <span class="indicator-label">EMA60</span>
+            <span class="indicator-value" id="ind-ema60">--</span>
+          </div>
+          <!-- EMA120 -->
+          <div class="indicator-card">
+            <span class="indicator-label">EMA120</span>
+            <span class="indicator-value" id="ind-ema120">--</span>
+          </div>
+          <!-- MA200 牛熊线 -->
+          <div class="indicator-card">
+            <span class="indicator-label">MA200 牛熊</span>
+            <span class="indicator-value" id="ind-ma200">--</span>
+          </div>
+          <!-- 斜率20 -->
+          <div class="indicator-card">
+            <span class="indicator-label">斜率20</span>
+            <span class="indicator-value" id="ind-slope20">--</span>
+          </div>
+          <!-- RSI(14) -->
+          <div class="indicator-card">
+            <span class="indicator-label">RSI(14)</span>
+            <span class="indicator-value" id="ind-rsi">--</span>
+          </div>
+          <!-- MACD -->
+          <div class="indicator-card">
+            <span class="indicator-label">MACD</span>
+            <span class="indicator-value" id="ind-macd">--</span>
+          </div>
+          <!-- 成交量 -->
+          <div class="indicator-card">
+            <span class="indicator-label">成交量</span>
+            <span class="indicator-value" id="ind-volume">--</span>
+          </div>
+          <!-- 量比 -->
+          <div class="indicator-card">
+            <span class="indicator-label">量比</span>
+            <span class="indicator-value" id="ind-volratio">--</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 资产曲线 -->
+      <section class="panel panel-chart">
+        <div class="panel-header">
+          <h3>资产曲线</h3>
+        </div>
+        <div class="chart-container">
+          <canvas id="equityChart"></canvas>
+        </div>
+      </section>
+
+    </aside>
+
+    <!-- =================== 中栏：AI 决策 =================== -->
+    <section class="col-center">
+
+      <!-- 结构化决策卡片 -->
+      <section class="panel panel-decision-structured" id="panel-structured">
+        <div class="panel-header">
+          <h3>AI 决策摘要</h3>
+          <div class="decision-meta" id="decision-meta">
+            <span class="decision-time">--</span>
+            <span class="decision-iteration">#-</span>
+          </div>
+        </div>
+        <div class="structured-decision" id="structured-decision">
+          <div class="sd-row">
+            <div class="sd-card sd-action">
+              <span class="sd-label">操作</span>
+              <span class="sd-value sd-action-value" id="sd-action">等待数据...</span>
+            </div>
+            <div class="sd-card sd-confidence">
+              <span class="sd-label">置信度</span>
+              <span class="sd-value" id="sd-confidence">--</span>
+              <div class="sd-bar"><div class="sd-bar-fill" id="sd-confidence-bar"></div></div>
+            </div>
+            <div class="sd-card sd-trend">
+              <span class="sd-label">趋势</span>
+              <span class="sd-value" id="sd-trend">--</span>
+            </div>
+          </div>
+          <div class="sd-row">
+            <div class="sd-card sd-risk">
+              <span class="sd-label">风险等级</span>
+              <span class="sd-value" id="sd-risk">--</span>
+            </div>
+            <div class="sd-card sd-rr">
+              <span class="sd-label">盈亏比</span>
+              <span class="sd-value" id="sd-rr">--</span>
+            </div>
+            <div class="sd-card sd-signals">
+              <span class="sd-label">信号</span>
+              <span class="sd-value" id="sd-signals">--</span>
+            </div>
+          </div>
+          <div class="sd-reasoning" id="sd-reasoning"></div>
+        </div>
+      </section>
+
+      <!-- AI 决策详情（可折叠） -->
+      <section class="panel panel-decision-full">
+        <div class="panel-header panel-header-collapsible" id="decision-toggle-header">
+          <h3>AI 决策详情</h3>
+          <span class="collapse-toggle" id="decision-toggle">▼ 收起</span>
+        </div>
+        <div class="decision-container" id="decision-container">
+          <div class="decision-content" id="decision-content">
+            <p class="loading">加载 AI 决策中...</p>
+          </div>
+        </div>
+      </section>
+
     </section>
 
-    <!-- AI Decision Section -->
-    <section class="chart-section">
-      <div class="chart-header">
-        <h3 class="decision-title">最新 AI 决策</h3>
-        <div class="decision-meta" id="decision-meta">
-          <span class="decision-time">加载中...</span>
-          <span class="decision-iteration">#-</span>
-        </div>
-      </div>
-      <div class="decision-container">
-        <div class="decision-content" id="decision-content">
-          <p class="loading">加载 AI 决策中...</p>
-        </div>
-      </div>
-    </section>
+    <!-- =================== 右栏：账户 & 风控 =================== -->
+    <aside class="col-right">
 
-    <!-- Account Value Section -->
-    <section class="account-section">
-      <div class="account-header">
-        <h2>总资产</h2>
-        <div class="theme-toggle-btn" id="trend-colors-btn" style="cursor: pointer;">
-          <span>THEME: 红涨绿跌</span>
+      <!-- 账户总览 -->
+      <section class="panel panel-account">
+        <div class="panel-header">
+          <h3>账户总览</h3>
+          <div class="theme-toggle-btn" id="trend-colors-btn" style="cursor: pointer;">
+            <span>红涨绿跌</span>
+          </div>
         </div>
-      </div>
-      <div class="account-value">
-        <span class="currency-symbol">$</span>
-        <span class="value-amount" id="account-value">0.00</span>
-      </div>
-      <div class="value-change">
-        <span class="change-amount" id="value-change">+$0.00</span>
-        <span class="change-percent" id="value-percent">(+0.00%)</span>
-      </div>
-      <div class="account-details">
-        <div class="detail-item">
-          <span class="detail-label">可用余额</span>
-          <span class="detail-value" id="available-balance">0.00</span>
+        <div class="account-value">
+          <span class="currency-symbol">$</span>
+          <span class="value-amount" id="account-equity">0.00</span>
         </div>
-        <div class="detail-item">
-          <span class="detail-label">未实现盈亏</span>
-          <span class="detail-value" id="unrealised-pnl">+0.00</span>
+        <div class="value-change">
+          <span class="change-amount" id="value-change">+$0.00</span>
+          <span class="change-percent" id="value-percent">(+0.00%)</span>
         </div>
-        <div class="detail-item">
-          <span class="detail-label">返佣后总资产</span>
-          <span class="detail-value" id="rebate-total-assets">0.00</span>
+        <div class="account-details">
+          <div class="detail-item">
+            <span class="detail-label">可用余额</span>
+            <span class="detail-value" id="available-balance">0.00</span>
+          </div>
+          <div class="detail-item">
+            <span class="detail-label">持仓保证金</span>
+            <span class="detail-value" id="position-margin">0.00</span>
+          </div>
+          <div class="detail-item">
+            <span class="detail-label">可用保证金</span>
+            <span class="detail-value" id="available-margin">0.00</span>
+          </div>
+          <div class="detail-item">
+            <span class="detail-label">保证金占用</span>
+            <span class="detail-value" id="margin-ratio">0%</span>
+          </div>
+          <div class="detail-item">
+            <span class="detail-label">未实现盈亏</span>
+            <span class="detail-value" id="unrealised-pnl">+0.00</span>
+          </div>
+          <div class="detail-item">
+            <span class="detail-label">初始资金</span>
+            <span class="detail-value" id="initial-balance">0.00</span>
+          </div>
+          <div class="detail-item">
+            <span class="detail-label">策略</span>
+            <span class="detail-value strategy-value" id="strategy-display">
+              <span class="strategy-badge-inline" id="strategy-badge">-</span>
+            </span>
+          </div>
+          <div class="detail-item">
+            <span class="detail-label">模型</span>
+            <span class="detail-value" id="model-name">-</span>
+          </div>
         </div>
-        <div class="detail-item">
-          <span class="detail-label">策略</span>
-          <span class="detail-value strategy-value" id="strategy-display">
-            <span class="strategy-badge-inline" id="strategy-badge">-</span>
-          </span>
-        </div>
-        <div class="detail-item">
-          <span class="detail-label">模型</span>
-          <span class="detail-value" id="model-name">-</span>
-        </div>
-      </div>
+      </section>
 
-      <!-- Current Positions Cards -->
-      <div class="positions-cards" id="positions-cards">
-        <div class="positions-cards-header">
-          <span class="positions-cards-title">当前持仓</span>
+      <!-- 信号质量评分 -->
+      <section class="panel panel-quality-score">
+        <div class="panel-header">
+          <h3>信号质量评分</h3>
+          <span class="quality-score-badge" id="qs-badge">--</span>
         </div>
-        <div class="positions-cards-container" id="positions-cards-container">
-          <div class="positions-cards-empty">暂无持仓</div>
+        <div class="quality-score-display">
+          <div class="qs-main">
+            <div class="qs-gauge">
+              <canvas id="qs-gauge-chart"></canvas>
+            </div>
+            <div class="qs-value" id="qs-total">--</div>
+            <div class="qs-label" id="qs-label">等待数据</div>
+          </div>
+          <div class="qs-dimensions" id="qs-dimensions">
+            <div class="qs-dim-item">
+              <span class="qs-dim-label">共振</span>
+              <span class="qs-dim-value" id="qs-resonance">--</span>
+              <div class="qs-dim-bar"><div class="qs-dim-fill" id="qs-resonance-bar"></div></div>
+            </div>
+            <div class="qs-dim-item">
+              <span class="qs-dim-label">周期对齐</span>
+              <span class="qs-dim-value" id="qs-alignment">--</span>
+              <div class="qs-dim-bar"><div class="qs-dim-fill" id="qs-alignment-bar"></div></div>
+            </div>
+            <div class="qs-dim-item">
+              <span class="qs-dim-label">趋势强度</span>
+              <span class="qs-dim-value" id="qs-trend">--</span>
+              <div class="qs-dim-bar"><div class="qs-dim-fill" id="qs-trend-bar"></div></div>
+            </div>
+            <div class="qs-dim-item">
+              <span class="qs-dim-label">量价确认</span>
+              <span class="qs-dim-value" id="qs-volume">--</span>
+              <div class="qs-dim-bar"><div class="qs-dim-fill" id="qs-volume-bar"></div></div>
+            </div>
+            <div class="qs-dim-item">
+              <span class="qs-dim-label">入场位置</span>
+              <span class="qs-dim-value" id="qs-position">--</span>
+              <div class="qs-dim-bar"><div class="qs-dim-fill" id="qs-position-bar"></div></div>
+            </div>
+          </div>
         </div>
-      </div>
-    </section>
+      </section>
 
-    <!-- Positions Table Section -->
-    <section class="positions-section">
-      <div class="section-header-with-action">
-        <h2 class="section-header">持仓详情</h2>
-        <button class="btn-login" id="login-btn">登录</button>
-      </div>
-      <div class="positions-container">
-        <table class="positions-table">
-          <thead>
-            <tr>
-              <th>币种</th>
-              <th>方向</th>
-              <th>杠杆</th>
-              <th>开仓价</th>
-              <th>现价</th>
-              <th>未实现盈亏</th>
-              <th>收益率</th>
-              <th class="th-actions">操作</th>
-            </tr>
-          </thead>
-          <tbody id="positions-body">
-            <tr>
-              <td colspan="8" class="loading">加载中...</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
+      <!-- 绩效总览 -->
+      <section class="panel panel-performance">
+        <div class="panel-header">
+          <h3>绩效总览</h3>
+        </div>
+        <div class="perf-grid">
+          <div class="perf-item">
+            <span class="perf-label">累计盈亏</span>
+            <span class="perf-value" id="perf-total-pnl">--</span>
+          </div>
+          <div class="perf-item">
+            <span class="perf-label">总交易数</span>
+            <span class="perf-value" id="perf-total-trades">--</span>
+          </div>
+          <div class="perf-item">
+            <span class="perf-label">胜率</span>
+            <span class="perf-value" id="perf-winrate">--</span>
+          </div>
+          <div class="perf-item">
+            <span class="perf-label">最大回撤</span>
+            <span class="perf-value" id="perf-maxdd">--</span>
+          </div>
+          <div class="perf-item">
+            <span class="perf-label">夏普比率</span>
+            <span class="perf-value" id="perf-sharpe">--</span>
+          </div>
+          <div class="perf-item">
+            <span class="perf-label">最大单笔</span>
+            <span class="perf-value" id="perf-maxwin">--</span>
+          </div>
+        </div>
+      </section>
 
-    <!-- Trades History Section -->
-    <section class="trades-section">
-      <h2 class="section-header">交易历史</h2>
-      <div class="trades-container">
-        <table class="trades-table">
-          <thead>
-            <tr>
-              <th>时间</th>
-              <th>币种</th>
-              <th>类型</th>
-              <th>方向</th>
-              <th>价格</th>
-              <th>数量</th>
-              <th>杠杆</th>
-              <th>手续费</th>
-              <th>盈亏</th>
-            </tr>
-          </thead>
-          <tbody id="trades-body">
-            <tr>
-              <td colspan="9" class="loading">加载中...</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
+      <!-- 市场情绪 -->
+      <section class="panel panel-sentiment">
+        <div class="panel-header">
+          <h3>市场情绪</h3>
+          <span class="sentiment-badge" id="sentiment-badge">--</span>
+        </div>
+        <div class="sentiment-content">
+          <div class="sentiment-gauge">
+            <div class="gauge-bar-bg">
+              <div class="gauge-bar-fill" id="gauge-fill"></div>
+            </div>
+            <div class="gauge-labels">
+              <span>极度恐惧</span>
+              <span>恐惧</span>
+              <span>中性</span>
+              <span>贪婪</span>
+              <span>极度贪婪</span>
+            </div>
+          </div>
+          <div class="sentiment-metrics">
+            <div class="sent-metric">
+              <span class="sent-metric-label">F&G 指数</span>
+              <span class="sent-metric-value" id="fg-value">--</span>
+            </div>
+            <div class="sent-metric">
+              <span class="sent-metric-label">F&G 等级</span>
+              <span class="sent-metric-value" id="fg-classification">--</span>
+            </div>
+            <div class="sent-metric">
+              <span class="sent-metric-label">上次更新</span>
+              <span class="sent-metric-value" id="fg-updated">--</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 风控仪表盘 -->
+      <section class="panel panel-risk">
+        <div class="panel-header">
+          <h3>风控仪表盘</h3>
+          <span class="risk-status" id="risk-status">正常</span>
+        </div>
+        <div class="risk-grid">
+          <div class="risk-item">
+            <span class="risk-label">连续亏损</span>
+            <span class="risk-value" id="risk-consecutive-losses">0</span>
+          </div>
+          <div class="risk-item">
+            <span class="risk-label">信号命中率</span>
+            <span class="risk-value" id="risk-hit-rate">--</span>
+          </div>
+          <div class="risk-item">
+            <span class="risk-label">冷却倒计时</span>
+            <span class="risk-value" id="risk-cooldown">--</span>
+          </div>
+        </div>
+      </section>
+
+    </aside>
+
   </main>
 
-  <!-- Login Modal -->
-  <div class="modal" id="login-modal">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h3>输入平仓密码</h3>
-        <span class="modal-close" id="modal-close">&times;</span>
+  <!-- 底部：持仓详情 & 交易历史（全宽） -->
+  <main class="bottom-sections">
+
+    <!-- 持仓详情 -->
+    <section class="section-full positions-section">
+      <h2 class="section-header">持仓详情</h2>
+      <div class="positions-container">
+        <div class="table-wrapper">
+          <table class="positions-table">
+            <thead>
+              <tr>
+                <th>币种</th>
+                <th>方向</th>
+                <th>杠杆</th>
+                <th>开仓价</th>
+                <th>现价</th>
+                <th>未实现盈亏</th>
+                <th>收益率</th>
+                <th class="th-actions">操作</th>
+              </tr>
+            </thead>
+            <tbody id="positions-body">
+              <tr>
+                <td colspan="8" class="loading">加载中...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
-      <div class="modal-body">
-        <input type="password" id="password-input" class="password-input" placeholder="请输入平仓密码">
-        <p class="modal-hint">密码正确后将显示平仓按钮</p>
+    </section>
+
+    <!-- 交易历史 -->
+    <section class="section-full trades-section">
+      <h2 class="section-header">交易历史</h2>
+      <div class="trades-container">
+        <div class="table-wrapper">
+          <table class="trades-table">
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>币种</th>
+                <th>类型</th>
+                <th>方向</th>
+                <th>价格</th>
+                <th>数量</th>
+                <th>杠杆</th>
+                <th>手续费</th>
+                <th>盈亏</th>
+              </tr>
+            </thead>
+            <tbody id="trades-body">
+              <tr>
+                <td colspan="9" class="loading">加载中...</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
-      <div class="modal-footer">
-        <button class="btn-cancel" id="btn-cancel">取消</button>
-        <button class="btn-confirm" id="btn-confirm">确认</button>
-      </div>
-    </div>
-  </div>
+    </section>
+
+  </main>
 
   <!-- Toast Notification Container -->
   <div class="toast-container" id="toast-container"></div>

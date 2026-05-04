@@ -37,11 +37,11 @@ export function toGateContract(unifiedContract: UnifiedContract): string {
 
 /**
  * 将统一格式转换为OKX格式
- * BTC_USDT -> BTC-USDT-SWAP
+ * BTC_USDT -> BTC-USDT (现货交易对)
  */
 export function toOkxContract(unifiedContract: UnifiedContract): string {
   const symbol = unifiedContract.replace("_USDT", "");
-  return `${symbol}-USDT-SWAP`;
+  return `${symbol}-USDT`;
 }
 
 /**
@@ -54,10 +54,10 @@ export function fromGateContract(gateContract: string): UnifiedContract {
 
 /**
  * 从OKX格式转换为统一格式
- * BTC-USDT-SWAP -> BTC_USDT
+ * BTC-USDT -> BTC_USDT
  */
 export function fromOkxContract(okxContract: string): UnifiedContract {
-  const symbol = okxContract.replace("-USDT-SWAP", "");
+  const symbol = okxContract.replace("-USDT", "");
   return `${symbol}_USDT`;
 }
 

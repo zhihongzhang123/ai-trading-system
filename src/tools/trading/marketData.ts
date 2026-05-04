@@ -46,7 +46,18 @@ function ensureRange(value: number, min: number, max: number, defaultValue?: num
   return value;
 }
 
-// 计算 EMA
+/**
+ * 计算简单移动平均线 (SMA)
+ */
+function calculateSMA(prices: number[], period: number): number {
+  if (!prices || prices.length < period) return 0;
+  const slice = prices.slice(-period);
+  const sum = slice.reduce((a, b) => a + b, 0);
+  const sma = sum / period;
+  return Number.isFinite(sma) ? sma : 0;
+}
+
+// 计算指数移动平均线 (EMA)
 function calculateEMA(prices: number[], period: number) {
   if (!prices || prices.length === 0) return 0;
   const k = 2 / (period + 1);
@@ -139,83 +150,82 @@ function calculateATR(candles: any[], period: number) {
  *   sum: string   // 总成交额
  * }
  */
+/**
+ * 【LEI趋势跟踪体系】计算多周期均线技术指标
+ * MA20/60/120/200 + EMA20/60/120/200 + MACD + RSI + ATR + 成交量
+ */
 function calculateIndicators(candles: any[]) {
   if (!candles || candles.length === 0) {
     return {
       currentPrice: 0,
-      ema20: 0,
-      ema50: 0,
-      macd: 0,
-      rsi7: 50,
-      rsi14: 50,
-      volume: 0,
-      avgVolume: 0,
-      atr3: 0,
-      atr14: 0,
+      ma20: 0, ma60: 0, ma120: 0, ma200: 0,
+      ema20: 0, ema60: 0, ema120: 0, ema200: 0,
+      macd: 0, rsi7: 50, rsi14: 50,
+      volume: 0, avgVolume: 0, volumeRatio: 1,
+      atr3: 0, atr14: 0,
     };
   }
 
-  // 处理对象格式的K线数据（Gate.io API返回的是对象，不是数组）
   const closes = candles
     .map((c) => {
-      // 如果是对象格式（FuturesCandlestick）
-      if (c && typeof c === 'object' && 'c' in c) {
-        return Number.parseFloat(c.c);
-      }
-      // 如果是数组格式（兼容旧代码）
-      if (Array.isArray(c)) {
-        return Number.parseFloat(c[2]);
-      }
+      if (c && typeof c === 'object' && 'c' in c) return Number.parseFloat(c.c);
+      if (Array.isArray(c)) return Number.parseFloat(c[2]);
       return NaN;
     })
     .filter(n => Number.isFinite(n));
 
   const volumes = candles
     .map((c) => {
-      // 如果是对象格式（FuturesCandlestick）
       if (c && typeof c === 'object' && 'v' in c) {
         const vol = Number.parseFloat(c.v);
-        // 验证成交量：必须是有限数字且非负
         return Number.isFinite(vol) && vol >= 0 ? vol : 0;
       }
-      // 如果是数组格式（兼容旧代码）
       if (Array.isArray(c)) {
         const vol = Number.parseFloat(c[1]);
         return Number.isFinite(vol) && vol >= 0 ? vol : 0;
       }
       return 0;
     })
-    .filter(n => n >= 0); // 过滤掉负数成交量
+    .filter(n => n >= 0);
 
   if (closes.length === 0 || volumes.length === 0) {
     return {
       currentPrice: 0,
-      ema20: 0,
-      ema50: 0,
-      macd: 0,
-      rsi7: 50,
-      rsi14: 50,
-      volume: 0,
-      avgVolume: 0,
-      atr3: 0,
-      atr14: 0,
+      ma20: 0, ma60: 0, ma120: 0, ma200: 0,
+      ema20: 0, ema60: 0, ema120: 0, ema200: 0,
+      macd: 0, rsi7: 50, rsi14: 50,
+      volume: 0, avgVolume: 0, volumeRatio: 1,
+      atr3: 0, atr14: 0,
     };
   }
 
+  const currentPrice = ensureFinite(closes.at(-1) || 0);
+  const avgVol = volumes.length > 0 ? volumes.reduce((a, b) => a + b, 0) / volumes.length : 0;
+  const curVol = volumes.at(-1) || 0;
+
   return {
-    currentPrice: ensureFinite(closes.at(-1) || 0),
-    ema20: ensureFinite(calculateEMA(closes, 20)),
-    ema50: ensureFinite(calculateEMA(closes, 50)),
+    currentPrice,
+    // 简单移动平均线
+    ma20: ensureFinite(closes.length >= 20 ? calculateSMA(closes, 20) : currentPrice),
+    ma60: ensureFinite(closes.length >= 60 ? calculateSMA(closes, 60) : currentPrice),
+    ma120: ensureFinite(closes.length >= 120 ? calculateSMA(closes, 120) : currentPrice),
+    ma200: ensureFinite(closes.length >= 200 ? calculateSMA(closes, 200) : currentPrice),
+    // 指数移动平均线
+    ema20: ensureFinite(closes.length >= 20 ? calculateEMA(closes, 20) : currentPrice),
+    ema60: ensureFinite(closes.length >= 60 ? calculateEMA(closes, 60) : currentPrice),
+    ema120: ensureFinite(closes.length >= 120 ? calculateEMA(closes, 120) : currentPrice),
+    ema200: ensureFinite(closes.length >= 200 ? calculateEMA(closes, 200) : currentPrice),
+    // 辅助指标
     macd: ensureFinite(calculateMACD(closes)),
     rsi7: ensureRange(calculateRSI(closes, 7), 0, 100, 50),
     rsi14: ensureRange(calculateRSI(closes, 14), 0, 100, 50),
-    volume: ensureFinite(volumes.at(-1) || 0),
-    avgVolume: ensureFinite(volumes.length > 0 ? volumes.reduce((a, b) => a + b, 0) / volumes.length : 0),
+    // 成交量
+    volume: ensureFinite(curVol),
+    avgVolume: ensureFinite(avgVol),
+    volumeRatio: ensureFinite(avgVol > 0 ? curVol / avgVol : 1),
+    // ATR
     atr3: ensureFinite(calculateATR(candles, 3)),
     atr14: ensureFinite(calculateATR(candles, 14)),
-    volumeRatio: ensureFinite(volumes.length > 0 && (volumes.reduce((a, b) => a + b, 0) / volumes.length) > 0 
-      ? (volumes.at(-1) || 0) / (volumes.reduce((a, b) => a + b, 0) / volumes.length) 
-      : 1),
   };
 }
 
@@ -256,7 +266,7 @@ export const getTechnicalIndicatorsTool = createTool({
   description: "获取指定币种的技术指标（EMA、MACD、RSI等）",
   parameters: z.object({
     symbol: z.enum(RISK_PARAMS.TRADING_SYMBOLS).describe("币种代码"),
-    interval: z.enum(["1m", "3m", "5m", "15m", "30m", "1h", "4h"]).default("5m").describe("K线周期"),
+    interval: z.enum(["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"]).default("1h").describe("K线周期（默认1H主决策周期）"),
     limit: z.number().default(100).describe("K线数量"),
   }),
   execute: async ({ symbol, interval, limit }) => {

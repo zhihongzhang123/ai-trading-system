@@ -79,7 +79,7 @@ async function syncPositionsOnly() {
     // 3. 从交易所获取持仓
     const exchangeClient = createExchangeClient();
     const positions = await exchangeClient.getPositions();
-    const activePositions = positions.filter(p => Number.parseInt(p.size || "0") !== 0);
+    const activePositions = positions.filter(p => Number.parseFloat(p.size || "0") !== 0);
     const existingResult = await client.execute(
       "SELECT symbol, profit_target, stop_loss, tp_order_id, sl_order_id, entry_order_id, opened_at, peak_pnl_percent, partial_close_percentage FROM positions"
     );
@@ -98,7 +98,7 @@ async function syncPositionsOnly() {
       logger.info(`\n🔄 同步 ${activePositions.length} 个持仓到数据库...`);
       
       for (const pos of activePositions) {
-        const size = Number.parseInt(pos.size || "0");
+        const size = Number.parseFloat(pos.size || "0");
         if (size === 0) continue;
         
         const symbol = pos.contract.replace("_USDT", "");

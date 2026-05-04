@@ -572,7 +572,7 @@ async function checkPeakPnlAndTrailingStop(autoCloseEnabled: boolean) {
     
     // 2. 获取所有持仓
     const gatePositions = await exchangeClient.getPositions();
-    const activePositions = gatePositions.filter((p: any) => Number.parseInt(p.size || "0") !== 0);
+    const activePositions = gatePositions.filter((p: any) => Number.parseFloat(p.size || "0") !== 0);
     
     if (activePositions.length === 0) {
       // 清空内存记录
@@ -596,7 +596,7 @@ async function checkPeakPnlAndTrailingStop(autoCloseEnabled: boolean) {
     
     // 4. 检查每个持仓
     for (const pos of activePositions) {
-      const size = Number.parseInt(pos.size || "0");
+      const size = Number.parseFloat(pos.size || "0");
       const symbol = pos.contract.replace("_USDT", "");
       const side = size > 0 ? "long" : "short";
       const quantity = Math.abs(size);

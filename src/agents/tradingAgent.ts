@@ -21,12 +21,12 @@
  */
 import { Agent, Memory } from "@voltagent/core";
 import { LibSQLMemoryAdapter } from "@voltagent/libsql";
-import { createLogger } from "../utils/loggerUtils";
+import { createLogger } from "../utils/loggerUtils.js";
 import { createOpenAI } from "@ai-sdk/openai";
-import * as tradingTools from "../tools/trading";
-import { formatChinaTime } from "../utils/timeUtils";
-import { RISK_PARAMS } from "../config/riskParams";
-import { checkRiskGuard, formatRiskGuardForPrompt, calculateSafePositionSize, calculateSafeLeverage, logRiskEvent } from "../services/riskGuard";
+import * as tradingTools from "../tools/trading/index.js";
+import { formatChinaTime } from "../utils/timeUtils.js";
+import { RISK_PARAMS } from "../config/riskParams.js";
+import { checkRiskGuard, formatRiskGuardForPrompt, calculateSafePositionSize, calculateSafeLeverage, logRiskEvent } from "../services/riskGuard.js";
 
 /**
  * 账户风险配置
@@ -51,8 +51,8 @@ export function getAccountRiskConfig(): AccountRiskConfig {
 /**
  * 导入策略类型和参数
  */
-import type { TradingStrategy, StrategyParams, StrategyPromptContext } from "../strategies";
-import { getStrategyParams as getStrategyParamsBase, generateStrategySpecificPrompt, generateAlphaBetaPrompt } from "../strategies";
+import type { TradingStrategy, StrategyParams, StrategyPromptContext } from "../strategies/index.js";
+import { getStrategyParams as getStrategyParamsBase, generateStrategySpecificPrompt, generateAlphaBetaPrompt } from "../strategies/index.js";
 
 // 重新导出类型供外部使用
 export type { TradingStrategy, StrategyParams };
@@ -68,6 +68,142 @@ const logger = createLogger({
   name: "trading-agent",
   level: "debug",
 });
+
+/**
+ * 检查均线多头排列：价格 > EMA20 > EMA60 > EMA120
+ */
+function checkBullishAlignment(data: any): string {
+  const price = data?.price ?? 0;
+  const ema20 = data?.ema20 ?? 0;
+  const ema60 = data?.ema60 ?? 0;
+  const ema120 = data?.ema120 ?? 0;
+  if (price > ema20 && ema20 > ema60 && ema60 > ema120) return '✅ 是（价格 > EMA20 > EMA60 > EMA120）';
+  if (price > ema20 && ema20 > ema60) return '部分（价格 > EMA20 > EMA60，但 EMA60 ≯ EMA120）';
+  return '❌ 否';
+}
+
+/**
+ * 检查均线空头排列：价格 < EMA20 < EMA60 < EMA120
+ */
+function checkBearishAlignment(data: any): string {
+  const price = data?.price ?? 0;
+  const ema20 = data?.ema20 ?? 0;
+  const ema60 = data?.ema60 ?? 0;
+  const ema120 = data?.ema120 ?? 0;
+  if (price < ema20 && ema20 < ema60 && ema60 < ema120) return '✅ 是（价格 < EMA20 < EMA60 < EMA120）';
+  if (price < ema20 && ema20 < ema60) return '部分（价格 < EMA20 < EMA60，但 EMA60 ≮ EMA120）';
+  return '❌ 否';
+}
+
+// ==================== 趋势转折点检测 ====================
+
+/**
+ * 检测 EMA 拐头方向（基于斜率）
+ * slope > 0 且斜率加速 → 向上拐头加速
+ * slope > 0 但斜率减速 → 向上拐头减速
+ * slope < 0 且斜率加速 → 向下拐头加速
+ * slope < 0 但斜率减速 → 向下拐头减速
+ */
+function detectEmaTurning(ema: number, prevEma: number, prevPrevEma: number): { direction: string; acceleration: string } {
+  if (!Number.isFinite(ema) || !Number.isFinite(prevEma) || !Number.isFinite(prevPrevEma) || prevEma === 0) {
+    return { direction: '未知', acceleration: '' };
+  }
+  const currentSlope = ema - prevEma;
+  const prevSlope = prevEma - prevPrevEma;
+  const direction = currentSlope > 0 ? '向上' : currentSlope < 0 ? '向下' : '走平';
+  const accel = currentSlope > prevSlope ? '加速' : currentSlope < prevSlope ? '减速' : '匀速';
+  return { direction, acceleration: accel };
+}
+
+/**
+ * 检测均线交叉信号
+ */
+function detectEmaCrossover(fast: number, slow: number, prevFast: number, prevSlow: number): string {
+  if (!Number.isFinite(fast) || !Number.isFinite(slow) || !Number.isFinite(prevFast) || !Number.isFinite(prevSlow)) return '无信号';
+  const wasAbove = prevFast > prevSlow;
+  const isAbove = fast > slow;
+  if (wasAbove && !isAbove) return '⚠️ 死叉（快线下穿慢线）';
+  if (!wasAbove && isAbove) return '✅ 金叉（快线上穿慢线）';
+  if (isAbove) return '多头排列中（快线 > 慢线）';
+  return '空头排列中（快线 < 慢线）';
+}
+
+/**
+ * 检测价格是否破关键均线
+ */
+function detectMaBreak(price: number, prevPrice: number, ma: number, maName: string): string {
+  if (!Number.isFinite(price) || !Number.isFinite(prevPrice) || !Number.isFinite(ma) || ma === 0) return '';
+  const wasAbove = prevPrice > ma;
+  const isAbove = price > ma;
+  if (wasAbove && !isAbove) return `⚠️ 下破${maName}（${ma.toFixed(1)}）`;
+  if (!wasAbove && isAbove) return `✅ 上破${maName}（${ma.toFixed(1)}）`;
+  return '';
+}
+
+/**
+ * 评估量价关系
+ */
+function evaluateVolumeAction(currentVol: number, avgVol: number, priceUp: boolean): string {
+  if (!Number.isFinite(currentVol) || !Number.isFinite(avgVol) || avgVol === 0) return '量比未知';
+  const ratio = currentVol / avgVol;
+  if (ratio > 2.0) return priceUp ? '🔥 巨量上涨（强势放量）' : '⚠️ 巨量下跌（恐慌抛售）';
+  if (ratio > 1.5) return priceUp ? '放量上涨（多头进场）' : '放量下跌（空头打压）';
+  if (ratio < 0.5) return priceUp ? '缩量上涨（动能不足，需警惕）' : '缩量下跌（卖盘衰竭）';
+  if (ratio < 0.7) return '缩量整理';
+  return '量能正常';
+}
+
+/**
+ * 综合评估趋势转折点
+ */
+function assessTrendInflection(data: any): string {
+  const price = data?.price ?? 0;
+  const ema20 = data?.ema20 ?? 0;
+  const ema60 = data?.ema60 ?? 0;
+  const ema120 = data?.ema120 ?? 0;
+  const ma200 = data?.ma200 ?? 0;
+  const volume = data?.volume ?? 0;
+  const avgVolume = data?.avgVolume ?? 0;
+
+  // 从系列中提取前值（优先使用独立字段，兜底从 series 取）
+  const ema20Series = data?.ema20Series ?? [];
+  const ema60Series = data?.ema60Series ?? [];
+  const ema120Series = data?.ema120Series ?? [];
+  const priceSeries = data?.priceSeries ?? [];
+
+  const prevEma20 = data?.prevEma20 ?? (ema20Series.length >= 2 ? ema20Series[ema20Series.length - 2] : ema20);
+  const prevPrevEma20 = data?.prevPrevEma20 ?? (ema20Series.length >= 3 ? ema20Series[ema20Series.length - 3] : prevEma20);
+  const prevEma60 = data?.prevEma60 ?? (ema60Series.length >= 2 ? ema60Series[ema60Series.length - 2] : ema60);
+  const prevPrevEma60 = data?.prevPrevEma60 ?? (ema60Series.length >= 3 ? ema60Series[ema60Series.length - 3] : prevEma60);
+  const prevEma120 = data?.prevEma120 ?? (ema120Series.length >= 2 ? ema120Series[ema120Series.length - 2] : ema120);
+  const prevPrice = data?.prevPrice ?? (priceSeries.length >= 2 ? priceSeries[priceSeries.length - 2] : price);
+
+  let assessment: string[] = [];
+
+  // 1. 均线拐头
+  const ema20Turn = detectEmaTurning(ema20, prevEma20, prevPrevEma20);
+  const ema60Turn = detectEmaTurning(ema60, prevEma60, prevPrevEma60);
+  assessment.push(`EMA20拐头：${ema20Turn.direction}${ema20Turn.acceleration ? '（' + ema20Turn.acceleration + '）' : ''}`);
+  assessment.push(`EMA60拐头：${ema60Turn.direction}${ema60Turn.acceleration ? '（' + ema60Turn.acceleration + '）' : ''}`);
+
+  // 2. 均线交叉
+  assessment.push(`EMA20/60交叉：${detectEmaCrossover(ema20, ema60, prevEma20, prevEma60)}`);
+  assessment.push(`EMA60/120交叉：${detectEmaCrossover(ema60, ema120, prevEma60, prevEma120)}`);
+
+  // 3. 破线检测
+  const break20 = detectMaBreak(price, prevPrice, ema20, 'EMA20');
+  const break60 = detectMaBreak(price, prevPrice, ema60, 'EMA60');
+  const break200 = detectMaBreak(price, prevPrice, ma200, 'MA200牛熊线');
+  if (break20) assessment.push(break20);
+  if (break60) assessment.push(break60);
+  if (break200) assessment.push(break200);
+
+  // 4. 量价评估
+  const priceUp = price > prevPrice;
+  assessment.push(`量价状态：${evaluateVolumeAction(volume, avgVolume, priceUp)}`);
+
+  return assessment.join('\n');
+}
 
 /**
  * 从环境变量读取交易策略
@@ -350,10 +486,29 @@ function generateAlphaBetaPromptForCycle(data: {
       
       dataPrompt += `【${symbol}】
 当前价格: ${(data?.price ?? 0).toFixed(2)}
-EMA20: ${(data?.ema20 ?? 0).toFixed(2)}
-EMA50: ${(data?.ema50 ?? 0).toFixed(2)}
-MACD: ${(data?.macd ?? 0).toFixed(4)}
-RSI(7): ${(data?.rsi7 ?? 0).toFixed(1)}
+
+━━ 均线系统（EMA 20/60/120 + MA200 牛熊线）━━
+EMA20: ${(data?.ema20 ?? 0).toFixed(2)} | EMA60: ${(data?.ema60 ?? 0).toFixed(2)} | EMA120: ${(data?.ema120 ?? 0).toFixed(2)}
+MA200（牛熊线）: ${(data?.ma200 ?? 0).toFixed(2)}
+价格 vs MA200: ${(data?.price ?? 0) > (data?.ma200 ?? 0) ? '上方（牛市格局）' : '下方（熊市格局）'}
+
+均线排列:
+  多头排列: ${checkBullishAlignment(data)}
+  空头排列: ${checkBearishAlignment(data)}
+
+━━ 趋势转折点评估 ━━
+${assessTrendInflection(data)}
+
+━━ 指标 ━━
+MACD: ${(data?.macd ?? 0).toFixed(4)} ${((data?.macd ?? 0) > 0 ? '（零轴上方·多头）' : '（零轴下方·空头）')}
+RSI(14): ${(data?.rsi14 ?? 0).toFixed(1)}
+斜率(20): ${(data?.slope20 ?? 0).toFixed(4)} ${((data?.slope20 ?? 0) > 0 ? '（上升）' : '（下降）')}
+
+━━ K线序列（最近10根，用于形态识别）━━
+收盘价: ${(data?.priceSeries ?? []).slice(-10).map((p: number) => p.toFixed(1)).join(' → ')}
+最高价: ${(data?.highSeries ?? []).slice(-10).map((p: number) => p.toFixed(1)).join(' → ')}
+最低价: ${(data?.lowSeries ?? []).slice(-10).map((p: number) => p.toFixed(1)).join(' → ')}
+成交量: ${(data?.volumeSeries ?? []).slice(-10).map((v: number) => v.toFixed(1)).join(' → ')}
 `;
       
       if (data?.fundingRate !== undefined) {
@@ -361,20 +516,7 @@ RSI(7): ${(data?.rsi7 ?? 0).toFixed(1)}
 `;
       }
       
-      dataPrompt += `
-`;
-      
-      // 输出1H时间框架数据（最重要）
-      if (data?.multiTimeframe?.['1h']) {
-        const tf = data.multiTimeframe['1h'] as any;
-        dataPrompt += `1H时间框架（主要参考）:
-  价格序列: ${(tf?.prices ?? []).slice(-5).map((p: number) => p.toFixed(1)).join(' -> ')}
-  EMA20序列: ${(tf?.ema20 ?? []).slice(-5).map((e: number) => e.toFixed(1)).join(' -> ')}
-  MACD序列: ${(tf?.macd ?? []).slice(-5).map((m: number) => m.toFixed(3)).join(' -> ')}
-  趋势判断: ${tf?.ema20?.length > 0 && tf?.ema20[tf.ema20.length-1] > tf?.ema50?.[tf.ema50.length-1] ? '多头排列' : '空头排列'}
-
-`;
-      }
+      dataPrompt += `\n`;
     }
   }
 
@@ -428,7 +570,7 @@ ${newsContent}`;
 - 胜率: ${winRate.toFixed(1)}% (${profitCount}胜${lossCount}负)
 - 做多比例: ${longRate.toFixed(0)}% (${longCount}多/${shortCount}空)
 - 净盈亏: ${totalProfit >= 0 ? '+' : ''}${totalProfit.toFixed(2)} USDT
-${longRate > 80 ? '\n** 警告：做空比例过低，请认真检查做空机会！**\n' : ''}
+
 `;
     }
   }
@@ -643,24 +785,33 @@ function generateAiAutonomousPromptForCycle(data: {
   if (marketData) {
     for (const [symbol, dataRaw] of Object.entries(marketData)) {
       const data = dataRaw as any;
-      
+
       prompt += `\n【${symbol}】\n`;
       prompt += `当前价格: ${(data?.price ?? 0).toFixed(1)}\n`;
-      prompt += `EMA20: ${(data?.ema20 ?? 0).toFixed(3)}\n`;
+      prompt += `\n━━ 均线系统（EMA 20/60/120 + MA200 牛熊线）━━\n`;
+      prompt += `EMA20: ${(data?.ema20 ?? 0).toFixed(3)} | EMA60: ${(data?.ema60 ?? 0).toFixed(3)} | EMA120: ${(data?.ema120 ?? 0).toFixed(3)} | MA200: ${(data?.ma200 ?? 0).toFixed(3)}\n`;
+      prompt += `价格 vs MA200: ${(data?.price ?? 0) > (data?.ma200 ?? 0) ? '上方（牛市格局）' : '下方（熊市格局）'}\n`;
+      prompt += `\n均线排列:\n`;
+      prompt += `  多头排列: ${checkBullishAlignment(data)}\n`;
+      prompt += `  空头排列: ${checkBearishAlignment(data)}\n`;
+      prompt += `\n━━ 趋势转折点评估 ━━\n`;
+      prompt += `${assessTrendInflection(data)}\n`;
+      prompt += `\n━━ 指标 ━━\n`;
       prompt += `MACD: ${(data?.macd ?? 0).toFixed(3)}\n`;
-      prompt += `RSI(7): ${(data?.rsi7 ?? 0).toFixed(3)}\n`;
-      
-      if (data?.fundingRate !== undefined) {
-        prompt += `资金费率: ${data.fundingRate.toExponential(2)}\n`;
-      }
-      
-      prompt += `\n`;
-      
+      prompt += `RSI(14): ${(data?.rsi14 ?? 0).toFixed(1)}\n`;
+      prompt += `斜率(20): ${(data?.slope20 ?? 0).toFixed(4)}\n`;
+
+      prompt += `\n━━ K线序列（最近10根，用于形态识别）━━\n`;
+      prompt += `收盘价: ${(data?.priceSeries ?? []).slice(-10).map((p: number) => p.toFixed(1)).join(' → ')}\n`;
+      prompt += `最高价: ${(data?.highSeries ?? []).slice(-10).map((p: number) => p.toFixed(1)).join(' → ')}\n`;
+      prompt += `最低价: ${(data?.lowSeries ?? []).slice(-10).map((p: number) => p.toFixed(1)).join(' → ')}\n`;
+      prompt += `成交量: ${(data?.volumeSeries ?? []).slice(-10).map((v: number) => v.toFixed(1)).join(' → ')}\n`;
+
       // 输出多时间框架数据
       if (data?.multiTimeframe) {
         for (const [timeframe, tfData] of Object.entries(data.multiTimeframe)) {
           const tf = tfData as any;
-          prompt += `${timeframe} 时间框架:\n`;
+          prompt += `\n${timeframe} 时间框架:\n`;
           prompt += `  价格序列: ${(tf?.prices ?? []).map((p: number) => p.toFixed(1)).join(', ')}\n`;
           prompt += `  EMA20序列: ${(tf?.ema20 ?? []).map((e: number) => e.toFixed(2)).join(', ')}\n`;
           prompt += `  MACD序列: ${(tf?.macd ?? []).map((m: number) => m.toFixed(3)).join(', ')}\n`;
@@ -804,8 +955,8 @@ ${newsContent}`;
 【可用工具】
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-• openPosition: 开仓（做多或做空）
-  - 参数: symbol（币种）, side（long/short）, leverage（杠杆）, amountUsdt（金额）
+• openPosition: 开多仓（系统只做多，禁止做空）
+  - 参数: symbol（币种）, side（固定为 long）, leverage（杠杆）, amountUsdt（金额）
   - 手续费: 约 0.05%
 
 • closePosition: 平仓
@@ -821,8 +972,30 @@ ${newsContent}`;
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 请基于以上市场数据和账户信息，完全自主地分析市场并做出交易决策。
+
+【技术分析框架 — 按此顺序分析】
+1. 均线排列判断：
+   - 价格 > EMA20 > EMA60 > EMA120 = 多头排列，趋势向上
+   - 价格 < EMA20 < EMA60 < EMA120 = 空头排列，趋势向下
+   - 排列不完整 = 震荡市，降低仓位或观望
+
+2. 牛熊线定位：
+   - 价格在 MA200 上方 = 牛市格局，优先做多
+   - 价格在 MA200 下方 = 熊市格局，观望为主，不轻易做多
+
+3. 趋势转折点识别（关键）：
+   - 拐头：EMA20/60 从向下转为向上 = 潜在多头反转；从向上转为向下 = 潜在空头反转
+   - 交叉：EMA20 上穿 EMA60 = 金叉（多头启动）；下穿 = 死叉（空头启动）
+   - 破线：价格突破关键均线（EMA20/60/MA200）是趋势转折的强信号
+   - 放量：突破时放量 = 真突破；缩量 = 假突破风险
+
+4. 综合判断：
+   - 三周期共振（1D长期定格局 / 1H中期定方向 / 5M短期找时机，三者一致）= 高胜率机会
+   - 拐头 → 交叉 → 排列形成 → 放量确认 = 完整趋势反转链路
+   - 任何单一信号都不足以开仓，必须多信号共振
+
 你可以选择：
-1. 开新仓位（做多或做空）
+1. 开新仓位（仅做多）
 2. 平掉现有仓位
 3. 继续持有
 4. 观望不交易
@@ -854,9 +1027,10 @@ export function generateTradingPrompt(data: {
   positions: any[];
   tradeHistory?: any[];
   recentDecisions?: any[];
+  recentQualityScores?: any[];
   positionCount?: number;
 }): string {
-  const { minutesElapsed, iteration, intervalMinutes, marketData, newsData, accountInfo, positions, tradeHistory, recentDecisions, positionCount } = data;
+  const { minutesElapsed, iteration, intervalMinutes, marketData, newsData, accountInfo, positions, tradeHistory, recentDecisions, recentQualityScores, positionCount } = data;
   const currentTime = formatChinaTime();
   
   // 获取当前策略参数（用于每周期强调风控规则）
@@ -967,7 +1141,7 @@ ${isCodeLevelProtectionEnabled ? (allowAiOverride ? `│                        
    检查每个持仓的止损/止盈/峰值回撤 → closePosition
    
 (2) 新开仓评估：
-   分析市场数据 → 识别双向机会（做多/做空） → openPosition
+   分析市场数据 → 识别做多机会 → openPosition(side='long')
    
 (3) 加仓评估：
    盈利>5%且趋势强化 → openPosition（≤50%原仓位，相同或更低杠杆）
@@ -985,7 +1159,7 @@ ${isCodeLevelProtectionEnabled ? (allowAiOverride ? `│                        
 【您的任务】
 直接基于上述数据做出交易决策，无需重复获取数据：
 1. 分析持仓管理需求（止损/止盈/加仓）→ 调用 closePosition / openPosition 执行
-2. 识别新交易机会（做多/做空）→ 调用 openPosition 执行
+2. 识别新做多机会 → 调用 openPosition(side='long') 执行
 3. 评估风险和仓位管理 → 调用 calculateRisk 验证
 
 关键：您必须实际调用工具执行决策，不要只停留在分析阶段！
@@ -1003,8 +1177,8 @@ ${isCodeLevelProtectionEnabled ? (allowAiOverride ? `│                        
   for (const [symbol, dataRaw] of Object.entries(marketData)) {
     const data = dataRaw as any;
     
-    prompt += `\n所有 ${symbol} 数据\n`;
-    prompt += `当前价格 = ${data.price.toFixed(1)}, 当前EMA20 = ${data.ema20.toFixed(3)}, 当前MACD = ${data.macd.toFixed(3)}, 当前RSI（7周期） = ${data.rsi7.toFixed(3)}\n\n`;
+    prompt += `\\n所有 ${symbol} 数据\\n`;
+    prompt += `当前价格 = ${data.price.toFixed(1)}, EMA20 = ${data.ema20.toFixed(3)}, EMA60 = ${data.ema60?.toFixed(3) ?? 'N/A'}, MACD = ${data.macd.toFixed(3)}, RSI(14) = ${data.rsi14?.toFixed(3) ?? 'N/A'}\\n\\n`;
     
     // 资金费率
     if (data.fundingRate !== undefined) {
@@ -1012,70 +1186,31 @@ ${isCodeLevelProtectionEnabled ? (allowAiOverride ? `│                        
       prompt += `资金费率: ${data.fundingRate.toExponential(2)}\n\n`;
     }
     
-    // 日内时序数据（3分钟级别）
-    if (data.intradaySeries && data.intradaySeries.midPrices.length > 0) {
-      const series = data.intradaySeries;
-      prompt += `日内序列（按分钟，最旧 → 最新）：\n\n`;
-      
-      // Mid prices
-      prompt += `中间价: [${series.midPrices.map((p: number) => p.toFixed(1)).join(", ")}]\n\n`;
-      
-      // EMA indicators (20‑period)
-      prompt += `EMA指标（20周期）: [${series.ema20Series.map((e: number) => e.toFixed(3)).join(", ")}]\n\n`;
-      
-      // MACD indicators
-      prompt += `MACD指标: [${series.macdSeries.map((m: number) => m.toFixed(3)).join(", ")}]\n\n`;
-      
-      // RSI indicators (7‑Period)
-      prompt += `RSI指标（7周期）: [${series.rsi7Series.map((r: number) => r.toFixed(3)).join(", ")}]\n\n`;
-      
-      // RSI indicators (14‑Period)
-      prompt += `RSI指标（14周期）: [${series.rsi14Series.map((r: number) => r.toFixed(3)).join(", ")}]\n\n`;
+    // 5m K线序列（形态识别专用）
+    if (data.klines5m && data.klines5m.length > 0) {
+      prompt += `5分钟K线序列（最近20根，用于形态识别：破底翻/顶底构造/趋势五步骤）：\\n`;
+      prompt += `收盘价: [${data.klines5m.map((k: any) => Number(k.c ?? k.close ?? 0)).map((p: number) => p.toFixed(1)).join(', ')}]\\n`;
+      prompt += `最高价: [${data.klines5m.map((k: any) => Number(k.h ?? k.high ?? 0)).map((p: number) => p.toFixed(1)).join(', ')}]\\n`;
+      prompt += `最低价: [${data.klines5m.map((k: any) => Number(k.l ?? k.low ?? 0)).map((p: number) => p.toFixed(1)).join(', ')}]\\n`;
+      prompt += `成交量: [${data.klines5m.map((k: any) => Number(k.v ?? k.volume ?? 0)).map((v: number) => v.toFixed(1)).join(', ')}]\\n\\n`;
     }
     
-    // 更长期的上下文数据（1小时级别 - 用于短线交易）
-    if (data.longerTermContext) {
-      const ltc = data.longerTermContext;
-      prompt += `更长期上下文（1小时时间框架）：\n\n`;
-      
-      prompt += `20周期EMA: ${ltc.ema20.toFixed(2)} vs. 50周期EMA: ${ltc.ema50.toFixed(2)}\n\n`;
-      
-      if (ltc.atr3 && ltc.atr14) {
-        prompt += `3周期ATR: ${ltc.atr3.toFixed(2)} vs. 14周期ATR: ${ltc.atr14.toFixed(3)}\n\n`;
-      }
-      
-      prompt += `当前成交量: ${ltc.currentVolume.toFixed(2)} vs. 平均成交量: ${ltc.avgVolume.toFixed(3)}\n\n`;
-      
-      // MACD 和 RSI 时序（4小时，最近10个数据点）
-      if (ltc.macdSeries && ltc.macdSeries.length > 0) {
-        prompt += `MACD指标: [${ltc.macdSeries.map((m: number) => m.toFixed(3)).join(", ")}]\n\n`;
-      }
-      
-      if (ltc.rsi14Series && ltc.rsi14Series.length > 0) {
-        prompt += `RSI指标（14周期）: [${ltc.rsi14Series.map((r: number) => r.toFixed(3)).join(", ")}]\n\n`;
-      }
-    }
-    
-    // 多时间框架指标数据
+    // 5m + 1h + 1d 三周期趋势共振（长期 > 中期 > 短期）
     if (data.timeframes) {
-      prompt += `多时间框架指标：\n\n`;
+      prompt += `三周期趋势共振（5m短期 / 1h中期 / 1d长期，长期 > 中期 > 短期）：\\n\\n`;
       
-      const tfList = [
-        { key: "1m", name: "1分钟" },
-        { key: "3m", name: "3分钟" },
-        { key: "5m", name: "5分钟" },
-        { key: "15m", name: "15分钟" },
-        { key: "30m", name: "30分钟" },
-        { key: "1h", name: "1小时" },
-      ];
+      const tfLabels: Record<string, string> = {
+        '1d': '日线 1D（长期定格局）',
+        '1h': '1小时 1H（中期定方向）',
+        '5m': '5分钟 5M（短期找时机）',
+      };
       
-      for (const tf of tfList) {
-        const tfData = data.timeframes[tf.key];
-        if (tfData) {
-          prompt += `${tf.name}: 价格=${tfData.currentPrice.toFixed(2)}, EMA20=${tfData.ema20.toFixed(3)}, EMA50=${tfData.ema50.toFixed(3)}, MACD=${tfData.macd.toFixed(3)}, RSI7=${tfData.rsi7.toFixed(2)}, RSI14=${tfData.rsi14.toFixed(2)}, 成交量=${tfData.volume.toFixed(2)}\n`;
-        }
+      for (const [tf, tfData] of Object.entries(data.timeframes as Record<string, any>)) {
+        if (!tfData || !['5m', '1h', '1d'].includes(tf)) continue;
+        const label = tfLabels[tf] || tf;
+        prompt += `${label}: 价格=${tfData.currentPrice.toFixed(1)}, EMA20=${tfData.ema20.toFixed(3)}, EMA60=${tfData.ema60?.toFixed(3) ?? 0}, EMA120=${tfData.ema120?.toFixed(3) ?? 0}, MA200=${tfData.ma200?.toFixed(3) ?? 0}, MACD=${tfData.macd.toFixed(3)}, RSI14=${tfData.rsi14?.toFixed(1) ?? 0}, 斜率=${tfData.slope20?.toFixed(4) ?? 0}\\n`;
       }
-      prompt += `\n`;
+      prompt += `\\n`;
     }
   }
 
@@ -1091,8 +1226,20 @@ ${isCodeLevelProtectionEnabled ? (allowAiOverride ? `│                        
   // 账户信息和表现（参照 1.md 格式）
   prompt += `\n以下是您的账户信息和表现\n`;
   
+  // 策略重置检测：资产归0时重新开始，不考虑历史回撤
+  if (accountInfo.strategyReset) {
+    prompt += `\n⚠️ 策略重置通知\n`;
+    prompt += `您的账户净值已跌至初始资金的 5% 以下，当前交易策略已判定为失败。\n`;
+    prompt += `系统已自动执行策略重置：\n`;
+    prompt += `1. 历史回撤数据已清零，不再作为决策参考\n`;
+    prompt += `2. 当前账户价值: ${accountInfo.totalBalance.toFixed(2)} USDT 作为新的初始基准\n`;
+    prompt += `3. 请基于当前市场状况重新制定交易策略，忘掉过去的失败\n`;
+    prompt += `4. 分析之前可能的失败原因：过度交易？逆势操作？忽视量价关系？\n`;
+    prompt += `5. 总结经验教训，用更严谨的纪律重新开始\n\n`;
+  }
+  
   // 计算账户回撤（如果提供了初始净值和峰值净值）
-  if (accountInfo.initialBalance !== undefined && accountInfo.peakBalance !== undefined) {
+  if (accountInfo.initialBalance !== undefined && accountInfo.peakBalance !== undefined && !accountInfo.strategyReset) {
     const drawdownFromPeak = ((accountInfo.peakBalance - accountInfo.totalBalance) / accountInfo.peakBalance) * 100;
     const drawdownFromInitial = ((accountInfo.initialBalance - accountInfo.totalBalance) / accountInfo.initialBalance) * 100;
     
@@ -1107,7 +1254,7 @@ ${isCodeLevelProtectionEnabled ? (allowAiOverride ? `│                        
     if (drawdownFromPeak >= RISK_PARAMS.ACCOUNT_DRAWDOWN_WARNING_PERCENT) {
       prompt += `提醒: 账户回撤已达到 ${drawdownFromPeak.toFixed(2)}%，请谨慎交易\n\n`;
     }
-  } else {
+  } else if (!accountInfo.strategyReset) {
     prompt += `当前账户价值: ${accountInfo.totalBalance.toFixed(2)} USDT\n\n`;
   }
   
@@ -1267,6 +1414,34 @@ ${isCodeLevelProtectionEnabled ? (allowAiOverride ? `│                        
     prompt += `- 如果市场条件改变，应该果断调整策略\n\n`;
   }
 
+  // 信号质量评分历史
+  if (recentQualityScores && recentQualityScores.length > 0) {
+    prompt += `\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
+    prompt += `【信号质量评分历史】（最近${recentQualityScores.length}次）\n`;
+    prompt += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
+    prompt += `质量评分由系统客观计算（0-100分），反映上次信号的综合质量：\n`;
+    prompt += `评分维度：信号共振(30分) + 多周期对齐(25分) + 趋势强度(15分) + 量价确认(15分) + 入场位置(15分)\n\n`;
+    
+    for (let i = 0; i < recentQualityScores.length; i++) {
+      const qs = recentQualityScores[i];
+      const scoreTime = formatChinaTime(qs.timestamp);
+      const timeDiff = Math.floor((new Date().getTime() - new Date(qs.timestamp).getTime()) / (1000 * 60));
+      const scoreLabel = qs.qualityScore >= 75 ? "优质" : qs.qualityScore >= 50 ? "中等" : "低质";
+      
+      prompt += `【评分】${scoreTime}（${timeDiff}分钟前）: ${qs.symbol} @ ${qs.price.toFixed(1)} → 质量分 ${qs.qualityScore}/100 [${scoreLabel}]\n`;
+      if (qs.components) {
+        prompt += `  共振=${qs.components.resonance || 0} 周期=${qs.components.alignment || 0} 趋势=${qs.components.trend || 0} 量价=${qs.components.volume || 0} 位置=${qs.components.position || 0}\n`;
+      }
+      prompt += `\n`;
+    }
+    
+    prompt += `使用建议：\n`;
+    prompt += `- 质量评分≥75分的信号可信度高，可以积极参与\n`;
+    prompt += `- 质量评分50-74分的信号需结合其他指标确认\n`;
+    prompt += `- 质量评分<50分的信号质量低，应谨慎对待或放弃\n`;
+    prompt += `- 如果连续多个信号质量分偏低，说明市场环境不适合当前策略，建议观望\n\n`;
+  }
+
   return prompt;
 }
 
@@ -1292,7 +1467,7 @@ ${strategyDesc}
 你拥有的能力：
 - 分析多时间框架的市场数据（价格、技术指标、成交量等）
 - 获取消息面数据（加密货币快讯、交易所公告、社交情绪）辅助决策
-- 开仓（做多或做空）
+- 开仓（仅做多）
 - 平仓（部分或全部）
 - 自主决定交易策略、风险管理、仓位大小、杠杆倍数
 - **自我复盘和持续改进**：从历史交易中学习，识别成功模式和失败原因
@@ -1330,8 +1505,7 @@ ${strategyDesc}
 
 双向交易：
 - 做多（long）：预期价格上涨时开多单
-- 做空（short）：预期价格下跌时开空单
-- 永续合约做空无需借币
+⚠️ 系统限制：禁止做空（short），仅允许做多（long）
 
 **自我复盘机制**：
 每个交易周期，你都应该：
@@ -1343,7 +1517,44 @@ ${strategyDesc}
 
 这种持续的自我复盘和改进是你成为优秀交易员的关键。
 
-现在，请基于每个周期提供的市场数据，先进行自我复盘，然后再做出交易决策。`;
+现在，请基于每个周期提供的市场数据，先进行自我复盘，然后再做出交易决策。
+
+**输出格式要求**：请在你的回复末尾附加一个 JSON 代码块，格式如下：
+
+\`\`\`json
+{
+  "decision": {
+    "action": "hold|open_long|close_long|add_position|reduce_position",
+    "symbol": "BTC",
+    "confidence": 0.85,
+    "reasoning": "一句话说明决策理由",
+    "entry_price": 95000,
+    "stop_loss": 93000,
+    "take_profit": 100000,
+    "position_size_percent": 10,
+    "leverage": 5
+  },
+  "market_analysis": {
+    "trend": "bullish|bearish|neutral",
+    "volatility": "high|medium|low",
+    "key_support": 93000,
+    "key_resistance": 102000,
+    "signals": ["RSI超卖", "MACD金叉"]
+  },
+  "risk_assessment": {
+    "risk_level": "low|medium|high",
+    "risk_reward_ratio": 2.5,
+    "max_drawdown_percent": 5
+  },
+  "self_review": {
+    "last_trade_result": "win|loss|none",
+    "lessons_learned": "从上一笔交易中学到了什么",
+    "improvement_plan": "本次改进计划"
+  }
+}
+\`\`\`
+
+JSON 中的数值必须与你的文字决策一致。如果没有持仓，entry_price/stop_loss/take_profit 可以设为 0。confidence 范围 0-1。`;
   }
   
   // 判断是否启用自动监控止损和移动止盈（根据策略配置）
@@ -1412,10 +1623,9 @@ ${strategySpecificContent}
        - 加仓后立即重新评估整体止损线（建议提高止损保护现有利润）
 4. **双向交易机会（重要提醒）**：
    - **做多机会**：当市场呈现上涨趋势时，开多单获利
-   - **做空机会**：当市场呈现下跌趋势时，开空单同样能获利
-   - **关键认知**：下跌中做空和上涨中做多同样能赚钱，不要只盯着做多机会
-   - **市场是双向的**：如果连续多个周期空仓，很可能是忽视了做空机会
-   - 永续合约做空没有借币成本，只需关注资金费率即可
+   - ⚠️ **系统限制**：本系统只做多不做空，下跌行情中保持空仓观望
+   - **关键认知**：宁可错过下跌行情，也不违背只做多原则
+   - **空仓是保护**：下跌趋势中空仓等待就是最佳策略
 5. **多时间框架分析**：您分析多个时间框架（15分钟、30分钟、1小时、4小时）的模式，以识别高概率入场点。${params.entryCondition}。
 6. **成交量信号**：成交量作为辅助参考，非强制要求
 7. **仓位管理（${params.name}策略）**：${params.riskTolerance}。最多同时持有${RISK_PARAMS.MAX_POSITIONS}个持仓。
@@ -1445,7 +1655,7 @@ ${strategySpecificContent}
          ② 【中周期趋势验证】15m和5m时间框架与长周期方向一致：
             - 价格保持在EMA20同侧运行，回调不破EMA20
             - MACD方向与长周期一致，无反向信号
-            - RSI方向与长周期一致（做多时>50，做空时<50）
+            - RSI方向与长周期一致（做多时>50）
          
          ③ 【其他确认指标】：
             - 价格K线连续同向突破，回调幅度小（<2-3%）
@@ -1464,7 +1674,7 @@ ${strategySpecificContent}
        
        * **单边行情示例**：
          - 做多：1h和30m价格持续在EMA20上方，15m和5m MACD柱状图连续红色扩大，多个时间框架RSI>70
-         - 做空：1h和30m价格持续在EMA20下方，15m和5m MACD柱状图连续绿色扩大，多个时间框架RSI<30
+         - （系统不做空，以下仅作识别参考）下跌特征：价格持续在EMA20下方，MACD柱状图连续绿色扩大，多个时间框架RSI<30
    
    (2) 震荡行情（横盘整理）- 严格防守，避免频繁交易亏损
        * **识别标准（优先看长周期，出现任意2项即判定为震荡）**：
@@ -1476,7 +1686,7 @@ ${strategySpecificContent}
          
          ② 【时间框架混乱信号】：
             - 长周期（30m、1h）和中周期（5m、15m）信号不一致或频繁切换
-            - 例如：30m做多信号，但15m做空，5m又做多（严重混乱）
+            - 例如：短期信号与长期趋势严重背离（需等待共振）
             - 短周期（1m、3m）与长周期方向经常相反
          
          ③ 【其他震荡特征】：
@@ -1654,10 +1864,34 @@ ${strategySpecificContent}
        - **小的确定性盈利 > 大的不确定性盈利**
        - **盈利 ≥ 10% 就要开始考虑分批止盈，不要死等高目标**
      
+     * 【技术面强制止盈信号】（出现任一即触发高度警惕，AI需综合评估后决策）：
+       ① 1d（日线）出现顶部构造：
+          - 1d K线在高位形成双顶/M头/头肩顶等经典顶部形态
+          - 1d 价格创新高但 MACD/RSI 出现顶背离（价格新高，指标未新高）
+          - 1d EMA20 斜率由正转负或明显拐头向下
+          - 1d 出现长上影线/十字星/乌云盖顶等见顶K线组合
+          → 顶部构造≠立即平仓！AI需要综合以下维度评估后再决策：
+            · 市场情绪：是否极度贪婪（Fear & Greed Index > 80）？散户是否大面积追涨？
+            · 量价关系：是否放量滞涨（成交量放大但价格不涨）？
+            · 消息面：是否利好满天飞、媒体一致看多、"这次不一样"叙事盛行？
+            · 技术指标：RSI是否严重超买（>80）？MACD是否高位死叉？
+            · 均线结构：EMA20是否仍在EMA60上方且向上发散？趋势是否完好？
+            · 如果上述多项信号同时出现 → 应当全部或大部分平仓
+            · 如果只是形态预警但趋势完好、情绪中性 → 可继续持有但收紧止损
+       
+       ② 20/60/120 均线开始出现空头排列：
+          - 空头排列定义：EMA20 < EMA60 < EMA120（短期均线在长期均线下方）
+          - 关注「开始出现」的阶段：EMA20 下穿 EMA60（死叉），且 EMA60 也开始拐头向下
+          - 不需要等待完全排列成型，只要出现 EMA20 下穿 EMA60 的早期信号就应警惕
+          - 结合 1d 周期判断：1d 出现均线空头排列 = 趋势反转确认，应当全部平仓
+          - 结合 1h 周期判断：1h 出现均线空头排列 = 中期趋势转弱，建议至少减仓50%
+          → 均线空头排列是多空力量逆转的铁证，但AI仍应结合当前盈利水平和市场结构做最终裁决
+     
      * 止盈分级执行（强烈建议，不是可选）：
-       - 盈利 ≥ +10% → 评估是否平仓30-50%（趋势减弱立即平）
-       - 盈利 ≥ +${params.partialTakeProfit.stage1.trigger}% → 强烈建议平仓${params.partialTakeProfit.stage1.closePercent}%（锁定一半利润）
-       - 盈利 ≥ +${params.partialTakeProfit.stage2.trigger}% → 强烈建议平仓剩余${params.partialTakeProfit.stage2.closePercent}%（全部落袋为安）
+       - 盈利 ≥ +10% → 评估趋势强度，趋势减弱则提前平仓
+       - 盈利 ≥ +${params.partialTakeProfit.stage1.trigger}% → 强烈建议平仓${params.partialTakeProfit.stage1.closePercent}%（首次收割）
+       - 盈利 ≥ +${params.partialTakeProfit.stage2.trigger}% → 强烈建议平仓剩余${params.partialTakeProfit.stage2.closePercent}%（大部分落袋）
+       - 盈利 ≥ +${params.partialTakeProfit.stage3.trigger}% → 全部清仓（利润完全落袋）
        - **关键时机判断**：
          * 趋势减弱/出现反转信号 → 立即全部止盈，不要犹豫
          * 阻力位/压力位附近 → 先平50%，观察突破情况
@@ -1812,12 +2046,14 @@ ${strategySpecificContent}
       - 现有持仓数 < ${RISK_PARAMS.MAX_POSITIONS}
       - ${params.entryCondition}
       - 潜在利润≥2-3%（扣除0.1%费用后仍有净收益）
+      - 【开仓是综合艺术，不是机械打分！从以下维度深度分析】：
+        * 技术面：均线排列、MACD/RSI状态、趋势五步骤进展
+        * 量价关系：底部放量=主力进场，无量上涨=虚涨不可追，放量下跌+价格不跌=底部吸筹
+        * 市场情绪（反向指标！）：极度恐惧=底部区域机会，极度贪婪=顶部区域风险
+        * 消息面：底部利空=利空出尽是进场信号，顶部利好=利好出尽是离场信号
+        * 形态识别：破底翻=W底/头肩底=高胜率信号
+        * 综合判断：至少3个维度共振才考虑开仓
       - ${params.name === '激进' ? '【关键】必须先判断行情类型，根据行情调整入场标准！' : ''}
-      - 做多和做空机会的识别：
-        * 做多信号：价格突破EMA20/50上方，MACD转正，RSI7 > 50且上升，多个时间框架共振向上
-        * 做空信号：价格跌破EMA20/50下方，MACD转负，RSI7 < 50且下降，多个时间框架共振向下
-        * 关键：做空信号和做多信号同样重要！不要只寻找做多机会而忽视做空机会
-      - ${params.name === '激进' ? '根据行情类型调整开仓策略：' : ''}
         ${params.name === '激进' ? `* 单边行情：2个时间框架一致即可开仓，使用大仓位（28-32%）和高杠杆（22-25倍）
         * 震荡行情：必须4个时间框架完全一致才能开仓，使用小仓位（15-20%）和低杠杆（15-18倍）
         * 如果是震荡行情且信号不够强，宁可不开仓！避免频繁止损！` : ''}
@@ -1871,7 +2107,7 @@ ${strategySpecificContent}
 - 允许加仓：对盈利>5%的持仓，趋势强化时可加仓≤50%，最多2次
 - 杠杆限制：加仓时必须使用相同或更低杠杆（禁止提高）
 - 最多持仓：${RISK_PARAMS.MAX_POSITIONS}个币种
-- 双向交易：做多和做空都能赚钱，不要只盯着做多机会
+- 只做多原则：系统仅做多，下跌时空仓观望就是最佳策略
 
 执行参数：
 - 执行周期：每${intervalMinutes}分钟
@@ -1927,7 +2163,7 @@ export async function createTradingAgent(intervalMinutes: number = 5, marketData
   let subAgents: Agent[] | undefined;
   if (strategy === "multi-agent-consensus") {
     logger.info("创建陪审团策略的子Agent（陪审团成员）...");
-    const { createTechnicalAnalystAgent, createTrendAnalystAgent, createRiskAssessorAgent } = await import("./analysisAgents");
+    const { createTechnicalAnalystAgent, createTrendAnalystAgent, createRiskAssessorAgent } = await import("./analysisAgents.js");
     
     // 传递市场数据上下文给子Agent
     subAgents = [
@@ -1946,7 +2182,7 @@ export async function createTradingAgent(intervalMinutes: number = 5, marketData
       createAggressiveTeamPredictionExpertAgent,
       createAggressiveTeamMoneyFlowExpertAgent,
       createAggressiveTeamRiskControlExpertAgent 
-    } = await import("./aggressiveTeamAgents");
+    } = await import("./aggressiveTeamAgents.js");
     
     // 传递市场数据上下文给子Agent
     subAgents = [

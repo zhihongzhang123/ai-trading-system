@@ -160,7 +160,7 @@ export const checkOrderStatusTool = createTool({
     try {
       const orderDetail = await client.getOrder(orderId);
       
-      const totalSize = Math.abs(Number.parseInt(orderDetail.size || "0"));
+      const totalSize = Math.abs(Number.parseFloat(orderDetail.size || "0"));
       const leftSize = Math.abs(Number.parseInt(orderDetail.left || "0"));
       const filledSize = totalSize - leftSize;
       const fillPrice = Number.parseFloat(orderDetail.fill_price || orderDetail.price || "0");

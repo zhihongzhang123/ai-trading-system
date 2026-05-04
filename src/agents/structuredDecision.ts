@@ -140,39 +140,75 @@ function fallbackParse(text: string): StructuredDecision | null {
 
 function parseAndValidate(jsonStr: string): StructuredDecision | null {
   try {
+    console.log("[PARSE] 尝试解析JSON，长度:", jsonStr.length);
+    console.log("[PARSE] JSON前100字符:", jsonStr.substring(0, 100));
     const parsed = JSON.parse(jsonStr);
+    console.log("[PARSE] JSON解析成功，顶层键:", Object.keys(parsed));
     return validate(parsed);
-  } catch {
+  } catch (e: any) {
+    console.error("[PARSE] JSON解析失败:", e.message);
+    console.error("[PARSE] 失败位置附近:", jsonStr.substring(0, 200));
     return null;
   }
 }
 
 function validate(data: any): StructuredDecision | null {
-  if (!data || typeof data !== "object") return null;
+  if (!data || typeof data !== "object") {
+    console.warn("[VALIDATE] 数据不是对象:", typeof data);
+    return null;
+  }
 
   // 验证 decision 字段
   const d = data.decision;
-  if (!d || typeof d !== "object") return null;
-  if (!VALID_ACTIONS.includes(d.action)) return null;
-  if (typeof d.symbol !== "string" || d.symbol.length === 0) return null;
-  if (typeof d.confidence !== "number" || d.confidence < 0 || d.confidence > 1) return null;
+  if (!d || typeof d !== "object") {
+    console.warn("[VALIDATE] 缺少decision字段:", !!d, typeof d);
+    return null;
+  }
+  if (!VALID_ACTIONS.includes(d.action)) {
+    console.warn("[VALIDATE] 无效action:", d.action, "合法:", VALID_ACTIONS);
+    return null;
+  }
+  if (typeof d.symbol !== "string" || d.symbol.length === 0) {
+    console.warn("[VALIDATE] symbol无效:", d.symbol);
+    return null;
+  }
+  if (typeof d.confidence !== "number" || d.confidence < 0 || d.confidence > 1) {
+    console.warn("[VALIDATE] confidence无效:", d.confidence, typeof d.confidence);
+    return null;
+  }
 
   // 验证 market_analysis
   const ma = data.market_analysis;
-  if (!ma || typeof ma !== "object") return null;
-  if (!VALID_TRENDS.includes(ma.trend)) return null;
-  if (!VALID_VOLATILITY.includes(ma.volatility)) return null;
+  if (!ma || typeof ma !== "object") {
+    console.warn("[VALIDATE] 缺少market_analysis:", !!ma, typeof ma);
+    return null;
+  }
+  if (!VALID_TRENDS.includes(ma.trend)) {
+    console.warn("[VALIDATE] 无效trend:", ma.trend, "合法:", VALID_TRENDS);
+    return null;
+  }
+  if (!VALID_VOLATILITY.includes(ma.volatility)) {
+    console.warn("[VALIDATE] 无效volatility:", ma.volatility, "合法:", VALID_VOLATILITY);
+    return null;
+  }
   if (!Array.isArray(ma.signals)) ma.signals = [];
 
   // 验证 risk_assessment
   const ra = data.risk_assessment;
-  if (!ra || typeof ra !== "object") return null;
-  if (!VALID_RISK_LEVELS.includes(ra.risk_level)) return null;
+  if (!ra || typeof ra !== "object") {
+    console.warn("[VALIDATE] 缺少risk_assessment:", !!ra, typeof ra);
+    return null;
+  }
+  if (!VALID_RISK_LEVELS.includes(ra.risk_level)) {
+    console.warn("[VALIDATE] 无效risk_level:", ra.risk_level, "合法:", VALID_RISK_LEVELS);
+    return null;
+  }
 
   // 验证 self_review (可选，允许AI省略)
-  const sr = data.self_review;
+  let sr = data.self_review;
   if (!sr || typeof sr !== "object") {
-    data.self_review = { last_trade_result: "none", lessons_learned: "", improvement_plan: "" };
+    sr = { last_trade_result: "none", lessons_learned: "", improvement_plan: "" };
+    data.self_review = sr;
   }
 
   // 填充默认值

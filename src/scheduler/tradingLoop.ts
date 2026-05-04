@@ -2440,7 +2440,21 @@ async function executeTradingDecision() {
       let structuredDecision: StructuredDecision | null = null;
       let decisionSummary = "";
       try {
+        // 调试日志：检查decisionText内容
+        const jsonBlockMatch = decisionText.match(/```json\s*([\s\S]*?)```/);
+        logger.info(`[DEBUG] decisionText长度: ${decisionText.length}, 包含\`\`\`json: ${jsonBlockMatch !== null}`);
+        if (jsonBlockMatch) {
+          logger.info(`[DEBUG] JSON块内容前100字符: ${jsonBlockMatch[1].substring(0, 100)}`);
+          try {
+            JSON.parse(jsonBlockMatch[1]);
+            logger.info(`[DEBUG] JSON.parse成功`);
+          } catch (e: any) {
+            logger.error(`[DEBUG] JSON.parse失败: ${e.message}`);
+          }
+        }
+        
         structuredDecision = extractDecisionJSON(decisionText);
+        logger.info(`[DEBUG] extractDecisionJSON返回: ${structuredDecision !== null ? '有数据' : 'null'}`);
         if (structuredDecision) {
           // 注入当前周期技术指标数据（使用 BTC 作为主指标）
           const mainSymbol = "BTC";

@@ -607,6 +607,61 @@ body {
     color: var(--text-secondary);
 }
 
+/* ---- 实时新闻情绪区域 ---- */
+.news-sentiment-section {
+    padding-top: 0.5rem;
+    border-top: 1px solid rgba(0, 255, 170, 0.15);
+    margin-top: 0.3rem;
+}
+.news-sentiment-title {
+    font-size: 0.65rem;
+    color: var(--text-dim);
+    margin-bottom: 0.5rem;
+    letter-spacing: 0.05em;
+}
+.news-sentiment-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.25rem 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+.news-sentiment-row:last-child {
+    border-bottom: none;
+}
+.news-symbol {
+    font-size: 0.75rem;
+    font-weight: bold;
+    color: var(--text-secondary);
+    min-width: 36px;
+}
+.news-bar-container {
+    flex: 1;
+    display: flex;
+    height: 6px;
+    border-radius: 3px;
+    overflow: hidden;
+    background: rgba(255, 255, 255, 0.05);
+}
+.news-bar-pos { background: var(--accent-green); transition: width 0.4s ease; }
+.news-bar-neu { background: var(--accent-yellow); transition: width 0.4s ease; }
+.news-bar-neg { background: var(--accent-red); transition: width 0.4s ease; }
+.news-direction {
+    font-size: 0.65rem;
+    min-width: 28px;
+    text-align: right;
+    font-weight: bold;
+}
+.news-direction.bullish { color: var(--accent-green); }
+.news-direction.bearish { color: var(--accent-red); }
+.news-direction.neutral { color: var(--accent-yellow); }
+.news-count {
+    font-size: 0.6rem;
+    color: var(--text-dim);
+    min-width: 24px;
+    text-align: right;
+}
+
 /* ============================================================
    信号质量评分面板
    ============================================================ */

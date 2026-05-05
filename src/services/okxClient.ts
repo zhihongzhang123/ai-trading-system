@@ -197,20 +197,20 @@ export class OkxClient {
   }
 
   /**
-   * 将 Gate 格式的合约名转换为 OKX 格式
-   * Gate: BTC_USDT -> OKX: BTC-USDT (现货)
+   * 将 Gate 格式的合约名转换为 OKX 永续合约格式
+   * Gate: BTC_USDT -> OKX: BTC-USDT-SWAP
    */
   private toOkxContract(gateContract: string): string {
     const symbol = gateContract.replace("_USDT", "");
-    return `${symbol}-USDT`;
+    return `${symbol}-USDT-SWAP`;
   }
 
   /**
-   * 将 OKX 格式的合约名转换为 Gate 格式
-   * OKX: BTC-USDT -> Gate: BTC_USDT
+   * 将 OKX 永续合约格式的合约名转换为 Gate 格式
+   * OKX: BTC-USDT-SWAP -> Gate: BTC_USDT
    */
   private toGateContract(okxContract: string): string {
-    const symbol = okxContract.replace("-USDT", "");
+    const symbol = okxContract.replace("-USDT-SWAP", "");
     return `${symbol}_USDT`;
   }
 
@@ -422,7 +422,7 @@ export class OkxClient {
     for (let i = 0; i <= retries; i++) {
       try {
         const data = await this.request("GET", "/api/v5/account/positions", {
-          instType: "MARGIN",
+          instType: "SWAP",
         });
         
         // 过滤：只保留允许的币种
@@ -750,7 +750,7 @@ export class OkxClient {
   async getOpenOrders(contract?: string): Promise<any[]> {
     try {
       const params: any = {
-        instType: "MARGIN",
+        instType: "SWAP",
       };
       
       if (contract) {
@@ -858,7 +858,7 @@ export class OkxClient {
       const instId = this.toOkxContract(contract);
       
       const data = await this.request("GET", "/api/v5/public/instruments", {
-        instType: "MARGIN",
+        instType: "SWAP",
         instId,
       });
       
@@ -888,11 +888,11 @@ export class OkxClient {
   async getAllContracts(): Promise<any[]> {
     try {
       const data = await this.request("GET", "/api/v5/public/instruments", {
-        instType: "MARGIN",
+        instType: "SWAP",
       });
       
       return (data || [])
-        .filter((inst: any) => inst.instId.endsWith("-USDT"))
+        .filter((inst: any) => inst.instId.endsWith("-USDT-SWAP"))
         .map((inst: any) => {
           const gateContract = this.toGateContract(inst.instId);
           return {
@@ -950,7 +950,7 @@ export class OkxClient {
   async getMyTrades(contract?: string, limit: number = 10): Promise<any[]> {
     try {
       const params: any = {
-        instType: "MARGIN",
+        instType: "SWAP",
         limit: Math.min(limit, 100).toString(),
       };
       
@@ -984,7 +984,7 @@ export class OkxClient {
   async getPositionHistory(contract?: string, limit: number = 100, offset: number = 0): Promise<any[]> {
     try {
       const params: any = {
-        instType: "MARGIN",
+        instType: "SWAP",
         limit: Math.min(limit, 100).toString(),
       };
       
@@ -1024,7 +1024,7 @@ export class OkxClient {
   async getOrderHistory(contract?: string, limit: number = 10): Promise<any[]> {
     try {
       const params: any = {
-        instType: "MARGIN",
+        instType: "SWAP",
         limit: Math.min(limit, 100).toString(),
         state: "filled",
       };

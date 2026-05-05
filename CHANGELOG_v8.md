@@ -1,5 +1,42 @@
 # 交易系统修改记录 v8.0
 
+## 本次修改 (2026-05-05) — LEI 体系整合 + 筹码峰引擎
+
+### 1. LEI 代理人 v7 学习体系注入
+- **内容**: 将 Pulse/LEI 五大核心交易框架整合到系统认知层
+  - ① 价量关系体系（量=分歧，持仓量=屯兵量）
+  - ② TQQQ 黄金三角+对冲体系（50/25/25 配置，DCA/BTD，期货/期权对冲）
+  - ③ 高质量股票暴跌 LEAPS 策略
+  - ④ 全市场动量检测策略
+  - ⑤ 筹码峰/Volume Profile 理论
+- **文档**: `docs/chip-distribution-analysis.md` (942行深度参考)
+
+### 2. 筹码峰引擎 (Volume Profile Engine) — Phase 1
+- **架构**: `BucketAggregator → IndicatorCalculator → VolumeProfileEngine → VolumeProfileCache`
+- **算法**: K线等分法（Candle Equal-Split Allocation），兼容 OKX REST K线 API
+- **模块**:
+  - `src/analysis/volumeProfile/types.ts` — 类型定义（ProfileBucket, ChipLevel, ResonanceLevel）
+  - `src/analysis/volumeProfile/BucketAggregator.ts` — K线成交量桶聚合
+  - `src/analysis/volumeProfile/IndicatorCalculator.ts` — POC/VAH/VAL 计算
+  - `src/analysis/volumeProfile/VolumeProfileEngine.ts` — 多周期共振检测（15m/1H/4H）
+  - `src/analysis/volumeProfile/VolumeProfileCache.ts` — 缓存层
+  - `src/tools/trading/volumeProfileTools.ts` — Voltagent 工具封装
+
+### 3. AI Trading Agent 工具注册
+- **文件**: `src/agents/tradingAgent.ts`
+- **变更**: 注入 `getVolumeProfileTool` + `getChipSupportResistanceTool`
+- **效果**: AI 交易循环原生支持筹码峰查询，与传统指标协同决策
+
+### 4. 市场情绪 API 端点
+- **文件**: `src/api/routes.ts` — 新增 `GET /api/sentiment`
+- **数据源**: Alternative.me Fear & Greed Index + 实时新闻情绪聚合
+- **覆盖**: BTC/ETH/SOL 三币种
+- **依赖**: `src/services/newsClient.js` (fetchCryptoNews + aggregateSentiment)
+
+### 5. 前端监控页增强
+- **文件**: `public/index.html`, `monitor-script.js`, `monitor-styles.css`
+- **变更**: +183行前端代码优化
+
 ## 本次修改 (2026-05-04)
 
 ### 1. MACD 评分逻辑修复

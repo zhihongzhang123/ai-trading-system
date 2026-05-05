@@ -2215,6 +2215,9 @@ export async function createTradingAgent(intervalMinutes: number = 5, marketData
       tradingTools.getCryptoNewsTool,
       tradingTools.getExchangeAnnouncementsTool,
       tradingTools.getLatestEventsTool,
+      // 筹码峰分析工具
+      tradingTools.getVolumeProfileTool,
+      tradingTools.getChipSupportResistanceTool,
     ],
     subAgents,
     memory,

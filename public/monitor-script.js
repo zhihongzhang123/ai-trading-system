@@ -924,59 +924,90 @@ class TradingMonitor {
         }
     }
 
-    // ---- 市场情绪面板 (Fear & Greed) ----
+    // ---- 市场情绪面板 (Fear & Greed + 实时新闻情绪) ----
     async loadSentimentData() {
         try {
-            const res = await fetch('https://api.alternative.me/fng/?limit=1');
+            const res = await fetch('/api/sentiment', { cache: 'no-cache' });
             const data = await res.json();
-            if (!data.data || data.data.length === 0) return;
-
-            const fg = data.data[0];
-            const value = parseInt(fg.value);
-            const classification = fg.value_classification;
+            if (!data || data.error) return;
 
             const el = (id) => document.getElementById(id);
 
-            // 指数值
-            const fgValueEl = el('fg-value');
-            if (fgValueEl) fgValueEl.textContent = value;
+            // ---- F&G 指数部分 ----
+            const fg = data.fearGreed;
+            if (fg) {
+                const value = fg.value;
+                const classification = fg.classification;
 
-            // 等级
-            const fgClassEl = el('fg-classification');
-            if (fgClassEl) {
-                const classMap = {
-                    'Extreme Fear': '极度恐惧', 'Fear': '恐惧', 'Neutral': '中性',
-                    'Greed': '贪婪', 'Extreme Greed': '极度贪婪'
-                };
-                fgClassEl.textContent = classMap[classification] || classification;
+                const fgValueEl = el('fg-value');
+                if (fgValueEl) fgValueEl.textContent = value;
+
+                const fgClassEl = el('fg-classification');
+                if (fgClassEl) {
+                    const classMap = {
+                        'Extreme Fear': '极度恐惧', 'Fear': '恐惧', 'Neutral': '中性',
+                        'Greed': '贪婪', 'Extreme Greed': '极度贪婪'
+                    };
+                    fgClassEl.textContent = classMap[classification] || classification;
+                }
+
+                const fgUpdatedEl = el('fg-updated');
+                if (fgUpdatedEl) {
+                    const ts = parseInt(fg.timestamp) * 1000;
+                    fgUpdatedEl.textContent = new Date(ts).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
+                }
+
+                const gaugeFill = el('gauge-fill');
+                if (gaugeFill) {
+                    gaugeFill.style.width = (100 - value) + '%';
+                }
+
+                const badge = el('sentiment-badge');
+                if (badge) {
+                    const classMap = {
+                        'Extreme Fear': 'fear', 'Fear': 'fear', 'Neutral': 'neutral',
+                        'Greed': 'greed', 'Extreme Greed': 'greed'
+                    };
+                    const textMap = {
+                        'Extreme Fear': '极度恐惧', 'Fear': '恐惧', 'Neutral': '中性',
+                        'Greed': '贪婪', 'Extreme Greed': '极度贪婪'
+                    };
+                    badge.textContent = textMap[classification] || classification;
+                    badge.className = 'sentiment-badge ' + (classMap[classification] || 'neutral');
+                }
             }
 
-            // 更新时间
-            const fgUpdatedEl = el('fg-updated');
-            if (fgUpdatedEl) {
-                const ts = parseInt(fg.timestamp) * 1000;
-                fgUpdatedEl.textContent = new Date(ts).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' });
-            }
+            // ---- 实时新闻情绪部分 ----
+            const newsRows = el('news-sentiment-rows');
+            if (newsRows && data.newsSentiment && data.newsSentiment.length > 0) {
+                let html = '';
+                for (const item of data.newsSentiment) {
+                    const s = item.sentiment;
+                    if (!s) continue;
+                    const total = s.pos + s.neu + s.neg;
+                    if (total === 0) continue;
 
-            // 仪表盘填充（黑色遮罩从右向左揭示）
-            const gaugeFill = el('gauge-fill');
-            if (gaugeFill) {
-                gaugeFill.style.width = (100 - value) + '%';
-            }
+                    const posPct = Math.round((s.pos / total) * 100);
+                    const neuPct = Math.round((s.neu / total) * 100);
+                    const negPct = 100 - posPct - neuPct;
 
-            // 徽章
-            const badge = el('sentiment-badge');
-            if (badge) {
-                const classMap = {
-                    'Extreme Fear': 'fear', 'Fear': 'fear', 'Neutral': 'neutral',
-                    'Greed': 'greed', 'Extreme Greed': 'greed'
-                };
-                const textMap = {
-                    'Extreme Fear': '极度恐惧', 'Fear': '恐惧', 'Neutral': '中性',
-                    'Greed': '贪婪', 'Extreme Greed': '极度贪婪'
-                };
-                badge.textContent = textMap[classification] || classification;
-                badge.className = 'sentiment-badge ' + (classMap[classification] || 'neutral');
+                    let dirClass = 'neutral';
+                    let dirText = '中性';
+                    if (s.direction === '偏多') { dirClass = 'bullish'; dirText = '偏多'; }
+                    else if (s.direction === '偏空') { dirClass = 'bearish'; dirText = '偏空'; }
+
+                    html += `<div class="news-sentiment-row">
+                        <span class="news-symbol">${item.symbol}</span>
+                        <div class="news-bar-container">
+                            <div class="news-bar-pos" style="width:${posPct}%"></div>
+                            <div class="news-bar-neu" style="width:${neuPct}%"></div>
+                            <div class="news-bar-neg" style="width:${negPct}%"></div>
+                        </div>
+                        <span class="news-direction ${dirClass}">${dirText}</span>
+                        <span class="news-count">${total}条</span>
+                    </div>`;
+                }
+                if (html) newsRows.innerHTML = html;
             }
         } catch (e) {
             console.error('加载情绪数据失败:', e);

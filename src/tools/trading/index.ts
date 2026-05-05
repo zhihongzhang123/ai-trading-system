@@ -53,3 +53,9 @@ export {
   getLatestEventsTool,
 } from "./newsData";
 
+// 筹码峰分析工具（Volume Profile）
+export {
+  getVolumeProfileTool,
+  getChipSupportResistanceTool,
+} from "./volumeProfileTools";
+

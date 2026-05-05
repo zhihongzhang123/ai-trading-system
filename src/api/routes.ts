@@ -28,6 +28,7 @@ import { getTradingStrategy, getStrategyParams } from "../agents/tradingAgent";
 import { RISK_PARAMS } from "../config/riskParams";
 import { getChinaTimeISO } from "../utils/timeUtils";
 import { getQuantoMultiplier } from "../utils/contractUtils";
+import { initNewsClient, fetchCryptoNews, aggregateSentiment } from "../services/newsClient.js";
 import { ipBlacklistMiddleware } from "../middleware/ipBlacklist";
 
 const logger = createLogger({
@@ -752,6 +753,58 @@ export function createApiRoutes() {
         success: false, 
         message: `平仓失败: ${error.message}` 
       }, 500);
+    }
+  });
+
+  /**
+   * 获取市场情绪数据（Fear & Greed 指数 + 实时新闻情绪聚合）
+   */
+  app.get("/api/sentiment", async (c) => {
+    try {
+      const symbols = RISK_PARAMS.TRADING_SYMBOLS || ["BTC", "ETH", "SOL"];
+
+      // 并行获取 F&G 指数和各币种新闻情绪
+      const [fgResult, ...newsResults] = await Promise.allSettled([
+        // Fear & Greed Index
+        fetch("https://api.alternative.me/fng/?limit=1").then(r => r.json()),
+        // 各币种新闻情绪
+        ...symbols.map(async (symbol) => {
+          const news = await fetchCryptoNews(symbol, 10);
+          const sentiment = news.length > 0 ? aggregateSentiment(news) : null;
+          return { symbol, sentiment, total: news.length };
+        }),
+      ]);
+
+      const response: any = {
+        fearGreed: null,
+        newsSentiment: [],
+        timestamp: new Date().toISOString(),
+      };
+
+      // 解析 F&G 指数
+      if (fgResult.status === "fulfilled") {
+        const data = fgResult.value;
+        if (data.data && data.data.length > 0) {
+          const fg = data.data[0];
+          response.fearGreed = {
+            value: parseInt(fg.value),
+            classification: fg.value_classification,
+            timestamp: fg.timestamp,
+          };
+        }
+      }
+
+      // 解析新闻情绪
+      for (const result of newsResults) {
+        if (result.status === "fulfilled") {
+          response.newsSentiment.push(result.value);
+        }
+      }
+
+      return c.json(response);
+    } catch (error: any) {
+      logger.error("获取情绪数据失败:", error);
+      return c.json({ error: error.message }, 500);
     }
   });
 

@@ -43,7 +43,7 @@ export function getDefaultRiskConfig(): RiskGuardConfig {
     dailyLossLimitPercent: parseFloat(process.env.DAILY_LOSS_LIMIT_PERCENT || "5"),
     maxConsecutiveLosses: parseInt(process.env.MAX_CONSECUTIVE_LOSSES || "3"),
     cooldownMinutes: parseInt(process.env.COOLDOWN_MINUTES || "60"),
-    recoveryTargetMultiple: parseFloat(process.env.RECOVERY_TARGET_MULTIPLE || "2.0"),
+    recoveryTargetMultiple: parseFloat(process.env.RECOVERY_TARGET_MULTIPLE || "1.4"),  // 恢复模式目标：余额需达到触发值的 1.4x 才解除（从 2.0 下调，避免小账户目标不切实际）
     recoveryMaxPositionPercent: parseFloat(process.env.RECOVERY_MAX_POSITION_PERCENT || "10"),
     recoveryMaxLeverage: parseInt(process.env.RECOVERY_MAX_LEVERAGE || "2"),
     emergencyStop: process.env.EMERGENCY_STOP === "true",
@@ -256,8 +256,13 @@ export async function checkRiskGuard(currentBalance: number, config?: RiskGuardC
     }
   }
 
-  // 5. 判断是否处于恢复模式
-  const isRecoveryMode = currentBalance < 100 || consecutiveLosses >= 2;
+  // 5. 判断是否处于恢复模式 v2.0
+  // 触发条件（满足任一）：
+  //   a) 账户余额 < 50 USDT（初始资金73.2的68%位置）
+  //   b) 连续亏损 >= 3 次
+  // 恢复正常条件：
+  //   余额 >= 70 USDT 且连续亏损清零（最近一笔交易盈利）
+  const isRecoveryMode = currentBalance < 50 || consecutiveLosses >= 3;
 
   return {
     isRecoveryMode,
@@ -333,10 +338,10 @@ export function formatRiskGuardForPrompt(riskState: RiskGuardState, config?: Ris
   text += `- 今日开始余额: ${riskState.todayStartBalance.toFixed(2)} USDT\n`;
 
   if (riskState.isRecoveryMode) {
-    text += `\n⚠️ 恢复模式限制：\n`;
+    text += `\n⚠️ 恢复模式限制（余额<50或连续亏损>=3次触发）：\n`;
     text += `- 最大仓位: ${cfg.recoveryMaxPositionPercent}% 账户余额\n`;
     text += `- 最大杠杆: ${cfg.recoveryMaxLeverage}x\n`;
-    text += `- 恢复目标: 余额达到当前的 ${cfg.recoveryTargetMultiple}x 后恢复正常\n`;
+    text += `- 恢复正常: 余额>=70 USDT 且最近交易盈利（连续亏损清零）\n`;
   }
 
   return text;

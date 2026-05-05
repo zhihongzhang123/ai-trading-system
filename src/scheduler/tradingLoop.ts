@@ -2061,33 +2061,27 @@ async function executeTradingDecision() {
       let shouldClose = false;
       let closeReason = "";
       
-      // a) 最大持仓时间强制平仓检查（从环境变量读取）
-      const openedTime = new Date(pos.opened_at);
-      const now = new Date();
-      const holdingHours = (now.getTime() - openedTime.getTime()) / (1000 * 60 * 60);
-      const MAX_HOLDING_HOURS = RISK_PARAMS.MAX_HOLDING_HOURS;
+      // a) 持仓时间限制已移除 — 无时间上限，由AI判断平仓时机
       
-      if (holdingHours >= MAX_HOLDING_HOURS) {
+      // b) 统一硬止损保护：不管杠杆多少倍，价格距离开仓价下跌 11% 即强制平仓
+      // 标记交易失败 → 分析原因 → 提出优化策略（需用户确认验证后应用）
+      const EXTREME_STOP_LOSS = RISK_PARAMS.EXTREME_STOP_LOSS_PERCENT; // -11%
+      // 价格变动百分比已在上面计算（priceChangePercent，不考虑杠杆）
+      
+      logger.info(`${symbol} 统一硬止损检查: 价格变动=${priceChangePercent.toFixed(2)}%, 硬止损线=${EXTREME_STOP_LOSS}%`);
+      
+      if (priceChangePercent <= EXTREME_STOP_LOSS) {
         shouldClose = true;
-        closeReason = `持仓时间已达 ${holdingHours.toFixed(1)} 小时，超过${MAX_HOLDING_HOURS}小时限制`;
-      }
-      
-      // b) 极端止损保护（防止爆仓，最后的安全网）
-      // 只在极端情况下强制平仓，避免账户爆仓
-      // 常规止损由AI决策，这里只是最后的安全网
-      const EXTREME_STOP_LOSS = RISK_PARAMS.EXTREME_STOP_LOSS_PERCENT; // 从环境变量读取
-      
-      logger.info(`${symbol} 极端止损检查: 当前盈亏=${pnlPercent.toFixed(2)}%, 极端止损线=${EXTREME_STOP_LOSS}%`);
-      
-      if (pnlPercent <= EXTREME_STOP_LOSS) {
-        shouldClose = true;
-        closeReason = `触发极端止损保护 (${pnlPercent.toFixed(2)}% ≤ ${EXTREME_STOP_LOSS}%，防止爆仓)`;
+        closeReason = `触发统一硬止损保护（价格跌${priceChangePercent.toFixed(2)}% ≤ ${EXTREME_STOP_LOSS}%，不管杠杆倍数，【交易失败】标记此笔交易为失败）`;
         logger.error(`${closeReason}`);
       }
       
       // c) 超短线策略专属风控规则
       const strategy = getTradingStrategy();
       if (strategy === 'ultra-short' && !shouldClose) {
+        const openedTime = new Date(pos.opened_at);
+        const now = new Date();
+        const holdingHours = (now.getTime() - openedTime.getTime()) / (1000 * 60 * 60);
         const holdingMinutes = holdingHours * 60;
         
         // 计算手续费成本（开仓 + 平仓，总共约 0.1%）
@@ -2117,9 +2111,9 @@ async function executeTradingDecision() {
       
       // d) 其他风控检查已移除，交由AI全权决策
       // AI负责：止损、移动止盈、分批止盈、时间止盈、峰值回撤等策略性决策
-      // 系统只保留底线安全保护（极端止损、最大持仓时间强制平仓、账户回撤保护）
+      // 系统只保留底线安全保护（统一硬止损-11%，账户回撤保护）
       
-      logger.info(`${symbol} 持仓监控: 盈亏=${pnlPercent.toFixed(2)}%, 持仓时间=${holdingHours.toFixed(1)}h, 峰值盈利=${peakPnlPercent.toFixed(2)}%, 杠杆=${leverage}x`);
+      logger.info(`${symbol} 持仓监控: 盈亏=${pnlPercent.toFixed(2)}%, 价格变动=${priceChangePercent.toFixed(2)}%, 峰值盈利=${peakPnlPercent.toFixed(2)}%, 杠杆=${leverage}x`);
       
       // 执行强制平仓
       if (shouldClose) {

@@ -185,6 +185,16 @@ export interface StrategyParams {
   enableCodeLevelProtection: boolean;
   
   /**
+   * 是否启用自动移动止盈（独立于 enableCodeLevelProtection）
+   * 
+   * true: 自动跟踪峰值盈利，达到价格阈值时自动平仓
+   * false: 仅跟踪峰值盈利供AI参考，平仓由AI根据筹码峰阻力+日线空头排列判断
+   * 
+   * 新平仓策略：趋势跟踪策略设为 false，止盈由AI决策（筹码峰阻力位 + 日线空头排列 + 利空异常）
+   */
+  enableAutoTrailingStop?: boolean;
+  
+  /**
    * 是否允许AI在代码级保护之外继续主动操作止盈止损（双重防护模式）
    * 
    * true: 即使启用了代码级保护，AI仍然可以主动执行止盈止损（双重防护）

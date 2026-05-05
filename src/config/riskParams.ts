@@ -21,7 +21,7 @@
  */
 
 // 从环境变量读取交易币种列表（逗号分隔）
-const DEFAULT_TRADING_SYMBOLS = 'BTC,ETH,SOL,XRP,BNB,BCH';
+const DEFAULT_TRADING_SYMBOLS = 'BTC';
 const tradingSymbolsStr = process.env.TRADING_SYMBOLS || DEFAULT_TRADING_SYMBOLS;
 const tradingSymbols = tradingSymbolsStr.split(',').map(s => s.trim()).filter(s => s.length > 0);
 
@@ -36,16 +36,17 @@ export const RISK_PARAMS = {
   // 交易币种列表（作为元组以支持 zod.enum）
   TRADING_SYMBOLS: tradingSymbols as [string, ...string[]],
   
-  // 最大持仓小时数
-  MAX_HOLDING_HOURS: Number.parseInt(process.env.MAX_HOLDING_HOURS || '36', 10),
+  // 最大持仓小时数 — 已移除限制，持仓无时间上限
+  MAX_HOLDING_HOURS: 99999,
   
-  // 最大持仓周期数（根据持仓小时数自动计算：小时数 * 6，因为每10分钟一个周期）
+  // 最大持仓周期数（已失效，保留避免引用报错）
   get MAX_HOLDING_CYCLES() {
     return this.MAX_HOLDING_HOURS * 6;
   },
   
-  // 极端止损线（单笔亏损百分比，防止爆仓的最后防线）
-  EXTREME_STOP_LOSS_PERCENT: Number.parseInt(process.env.EXTREME_STOP_LOSS_PERCENT || '-30', 10),
+  // 统一硬止损：不管杠杆多少倍，价格距离开仓价下跌 11% 即平仓
+  // 标记交易失败 → 分析原因 → 提出优化策略（需用户确认验证）
+  EXTREME_STOP_LOSS_PERCENT: Number.parseInt(process.env.EXTREME_STOP_LOSS_PERCENT || '-11', 10),
   
   // 账户回撤风控阈值
   // 禁止新开仓的回撤阈值（⚠️ 已禁用 - 相关检查已被注释，不再限制开仓）

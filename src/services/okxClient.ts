@@ -363,38 +363,17 @@ export class OkxClient {
         const account = data[0];
         const details = account.details || [];
         
-        // 优先 USDT，降级 USDC，最后用 totalEq
-        let targetDetail = details.find((d: any) => d.ccy === "USDT");
-        if (!targetDetail) {
-          targetDetail = details.find((d: any) => d.ccy === "USDC");
-        }
-        
+        // 修复：使用 totalEq 作为总权益（包含所有币种美元等值）
+        // 而不是只取 USDT/USDC 余额，解决账户金额显示不一致的问题
         const totalEqUsd = account.totalEq || "0";
+        const usdtDetail = details.find((d: any) => d.ccy === "USDT");
+        const usdcDetail = details.find((d: any) => d.ccy === "USDC");
         
-        if (!targetDetail && parseFloat(totalEqUsd) === 0) {
-          throw new Error("No USDT/USDC account found and totalEq is 0");
-        }
-        
-        // 转换为 Gate 格式
-        if (targetDetail) {
-          return {
-            currency: targetDetail.ccy,
-            total: targetDetail.eq,
-            available: targetDetail.availBal || targetDetail.availEq || "0",
-            positionMargin: targetDetail.frozenBal || "0",
-            orderMargin: targetDetail.ordFrozen || "0",
-            unrealisedPnl: details.reduce((sum: number, d: any) => {
-              return sum + parseFloat(d.upl || "0");
-            }, 0).toString(),
-          };
-        }
-        
-        // 没有单一稳定币，使用 totalEq（统一账户美元等值）
         return {
-          currency: "USD",
-          total: totalEqUsd,
-          available: totalEqUsd,
-          positionMargin: "0",
+          currency: "USDT",
+          total: totalEqUsd, // 使用统一账户总权益
+          available: usdtDetail?.availEq || usdcDetail?.availEq || "0",
+          positionMargin: usdtDetail?.frozenBal || "0",
           orderMargin: "0",
           unrealisedPnl: details.reduce((sum: number, d: any) => {
             return sum + parseFloat(d.upl || "0");
@@ -454,9 +433,13 @@ export class OkxClient {
             
             // OKX 使用双向持仓模式
             // posSide: long/short/net
-            // pos: 持仓数量（正数）
+            // pos: 合约张数（不是实际BTC量！）
             // 转换为 Gate 格式的 size（正数=多，负数=空）
-            let size = parseFloat(p.pos || "0");
+            // ⚠️ 关键修复：OKX pos 是合约张数，实际BTC量 = notionalUsd / markPx
+            // 例如 BTC-USDT-SWAP ctVal=0.01, pos=0.09张 → 实际0.0009 BTC
+            const markPx = parseFloat(p.markPx || "0");
+            const notionalUsd = parseFloat(p.notionalUsd || "0");
+            let size = markPx > 0 ? notionalUsd / markPx : parseFloat(p.pos || "0");
             if (p.posSide === "short") {
               size = -size;
             }
@@ -464,7 +447,6 @@ export class OkxClient {
             // 计算开仓价值（保证金）
             // OKX: notionalUsd = 持仓价值（USD）, margin = 保证金余额
             // 保证金 = 持仓价值 / 杠杆
-            const notionalUsd = parseFloat(p.notionalUsd || "0");
             const leverage = parseFloat(p.lever || "1");
             const marginValue = notionalUsd / leverage;
             

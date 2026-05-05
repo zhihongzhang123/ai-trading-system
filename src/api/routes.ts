@@ -85,14 +85,14 @@ export function createApiRoutes() {
         ? Number.parseFloat(initialResult.rows[0].total_value as string)
         : 100;
       
-      // 计算核心指标
-      const unrealisedPnl = Number.parseFloat(account.unrealisedPnl || "0");
+      // OKX totalEq 已包含未实现盈亏，无需重复叠加
       const totalBalance = Number.parseFloat(account.total || "0");
       const availableBalance = Number.parseFloat(account.available || "0");
       const positionMargin = Number.parseFloat(account.positionMargin || "0");
+      const unrealisedPnl = Number.parseFloat(account.unrealisedPnl || "0");
       
-      // 净资产 = 总资产 + 未实现盈亏
-      const equity = totalBalance + unrealisedPnl;
+      // 净资产 = totalEq（已包含未实现盈亏）
+      const equity = totalBalance;
       
       // 保证金占用率 = 保证金 / 总资产
       const marginRatio = totalBalance > 0 ? (positionMargin / totalBalance) * 100 : 0;

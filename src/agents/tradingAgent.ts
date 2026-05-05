@@ -1322,15 +1322,8 @@ ${isCodeLevelProtectionEnabled ? (allowAiOverride ? `│                        
       prompt += `  开仓价: ${pos.entry_price.toFixed(2)}\n`;
       prompt += `  当前价: ${pos.current_price.toFixed(2)}\n`;
       prompt += `  开仓时间: ${formatChinaTime(pos.opened_at)}\n`;
-      prompt += `  已持仓: ${holdingHours} 小时 (${holdingMinutes} 分钟, ${holdingCycles} 个周期)\n`;
-      prompt += `  距离${RISK_PARAMS.MAX_HOLDING_HOURS}小时限制: ${remainingHours.toFixed(1)} 小时 (${remainingCycles} 个周期)\n`;
-      
-      // 如果接近最大持仓时间,添加警告
-      if (remainingHours < 2) {
-        prompt += `  警告: 即将达到${RISK_PARAMS.MAX_HOLDING_HOURS}小时持仓限制,必须立即平仓!\n`;
-      } else if (remainingHours < 4) {
-        prompt += `  提醒: 距离${RISK_PARAMS.MAX_HOLDING_HOURS}小时限制不足4小时,请准备平仓\n`;
-      }
+      prompt += `  已持仓: ${holdingHours} 小时 (${holdingMinutes} 分钟)\n`;
+      // v8.0: 无持仓时间限制，由AI根据市场结构判断平仓时机
       
       prompt += "\n";
     }
@@ -1767,10 +1760,9 @@ ${strategySpecificContent}
   * 总名义敞口不超过账户净值的${params.leverageMax}倍
 - 交易费用：每笔交易约0.05%（往返总计0.1%）。每笔交易应有至少2-3%的盈利潜力。
 - **执行周期**：系统每${intervalMinutes}分钟执行一次，这意味着：
-  * ${RISK_PARAMS.MAX_HOLDING_HOURS}小时 = ${Math.floor(RISK_PARAMS.MAX_HOLDING_HOURS * 60 / intervalMinutes)}个执行周期
   * 您无法实时监控价格波动，必须设置保守的止损和止盈
   * 在${intervalMinutes}分钟内市场可能剧烈波动，因此杠杆必须保守
-- **最大持仓时间**：不要持有任何持仓超过${RISK_PARAMS.MAX_HOLDING_HOURS}小时（${Math.floor(RISK_PARAMS.MAX_HOLDING_HOURS * 60 / intervalMinutes)}个周期）。无论盈亏，在${RISK_PARAMS.MAX_HOLDING_HOURS}小时内平仓所有持仓。
+- **持仓无时间限制**：不要因为持仓时间长而平仓，只根据市场结构判断
 - **开仓前强制检查**：
   1. 使用getAccountBalance检查可用资金和账户净值
   2. 使用getPositions检查现有持仓数量和总敞口
@@ -1786,126 +1778,92 @@ ${strategySpecificContent}
 - **风控策略（系统硬性底线 + AI战术灵活性）**：
   
   【系统硬性底线 - 强制执行，不可违反】：
-  * 单笔亏损 ≤ ${RISK_PARAMS.EXTREME_STOP_LOSS_PERCENT}%：系统强制平仓（防止爆仓）
-  * 持仓时间 ≥ ${RISK_PARAMS.MAX_HOLDING_HOURS}小时：系统强制平仓（释放资金）
+  * 价格距离开仓价下跌 ≤ 11%：系统强制平仓（不管杠杆多少倍，1x/2x/3x 统一执行）
+  * 标记交易失败 → 分析原因 → 提出优化策略（需用户确认验证后才能应用）
   
-  【AI战术决策 - 专业建议，灵活执行】：
+  【AI战术决策 - 专业判断，灵活执行】：
   
   核心原则（必读）：
-  ${isCodeLevelProtectionEnabled ? `• 波段策略：AI只负责开仓，平仓完全由自动监控自动执行
-  • AI职责：专注于市场分析、开仓决策、风险监控和报告
-  • 禁止平仓：AI禁止主动调用 closePosition 进行止损或止盈
-  • 自动保护：自动监控每10秒检查，触发条件立即自动平仓
-  • 报告为主：AI在报告中说明持仓状态、风险等级、趋势健康度即可` : `• 止损 = 严格遵守：止损线是硬性规则，必须严格执行，仅可微调±1%
-  • 止盈 = 灵活判断：止盈要根据市场实际情况决定，2-3%盈利也可止盈，不要死等高目标
-  • 小确定性盈利 > 大不确定性盈利：宁可提前止盈，不要贪心回吐
+  • 止损 = 严格遵守：-11% 是硬性规则，系统自动执行，AI不需要主动止损
+  • 止盈 = AI灵活判断：根据筹码峰阻力位、日线趋势结构、利空消息综合判断
+  • 持仓无时间限制：不要因为持仓时间长而平仓，只根据市场结构判断
   • 趋势是朋友，反转是敌人：出现反转信号立即止盈，不管盈利多少
-  • 实战经验：盈利≥5%且持仓超过3小时，没有强趋势信号时可以主动平仓落袋为安`}
+  • 筹码峰是关键：阻力位附近的量价关系是止盈的核心依据
   
-  (1) 止损策略${isCodeLevelProtectionEnabled ? '（双层保护：自动监控强制止损 + AI战术止损）' : '（AI主动止损）'}：
-     ${isCodeLevelProtectionEnabled ? `
-     * 【自动监控强制止损】（每10秒自动检查，无需AI干预）：
-       系统已启用自动止损监控（每10秒检查一次），根据杠杆倍数分级保护：
-       - ${stopLossDescriptions[0]}
-       - ${stopLossDescriptions[1]}
-       - ${stopLossDescriptions[2]}
-       - 此止损完全自动化，AI无需手动执行，系统会保护账户安全
-       - 如果持仓触及自动监控止损线，系统会立即自动平仓
+  (1) 止损策略（统一硬止损，系统自动执行）：
      
-     * 【AI职责】（重要：AI不需要主动执行止损平仓）：
-       - AI只需要监控和分析持仓的风险状态
-       - 在报告中说明持仓的盈亏情况和风险等级
+     * 【统一硬止损 -11%】（每10秒自动检查，不管杠杆倍数）：
+       系统已启用统一硬止损监控（每10秒检查一次），规则如下：
+       - 不管杠杆是 1x、2x 还是 3x，价格距离开仓价下跌 11% 即强制平仓
+       - 这是价格跌幅判断，不是杠杆后盈亏百分比
+       - 触发后标记此笔交易为失败，系统自动分析原因并提出优化策略
+       - 优化策略需要用户确认验证后才能应用到下次交易
+       - AI无需手动执行止损，系统会自动保护账户安全
+     
+     * 【AI职责】：
+       - AI不需要主动调用 closePosition 进行止损
+       - 在报告中说明持仓的价格变动情况和风险等级
        - 分析技术指标和趋势健康度
-       - 禁止主动调用 closePosition 进行止损平仓
-       - 所有止损平仓都由自动监控自动执行
-     
-     * 【执行原则】：
-       - 自动监控会自动处理止损，AI无需介入
-       - AI专注于开仓决策和市场分析
-       - AI在报告中说明风险状态即可
-       - 让自动监控自动处理所有止损逻辑` : `
-     * 【AI主动止损】（当前策略未启用自动监控止损，AI全权负责）：
-       AI必须严格执行止损规则，这是保护账户的唯一防线：
-       - ${params.leverageMin}-${Math.floor((params.leverageMin + params.leverageMax) / 2)}倍杠杆：严格止损线 ${params.stopLoss.low}%
-       - ${Math.floor((params.leverageMin + params.leverageMax) / 2)}-${Math.ceil((params.leverageMin + params.leverageMax) * 0.75)}倍杠杆：严格止损线 ${params.stopLoss.mid}%
-       - ${Math.ceil((params.leverageMin + params.leverageMax) * 0.75)}-${params.leverageMax}倍杠杆：严格止损线 ${params.stopLoss.high}%
-       - 止损必须严格执行，不要犹豫，不要等待
-       - 微调空间：可根据关键支撑位/阻力位、趋势强度灵活调整±1-2%
-       - 如果看到趋势反转、破位等危险信号，应立即执行止损
-       - 没有自动监控保护，AI必须主动监控并及时止损`}
-     
-     * 说明：pnl_percent已包含杠杆效应，直接比较即可
+       - 如果接近-11%阈值，提醒用户注意风险
   
-  (2) 移动止盈策略${isCodeLevelProtectionEnabled ? '（由自动监控自动执行）' : '（AI主动执行）'}：
-     ${isCodeLevelProtectionEnabled ? `* 系统已启用自动监控移动止盈监控（每10秒检查一次，3级规则）：
-       - 自动跟踪每个持仓的盈利峰值（单个币种独立跟踪）
-       - Level 1: 峰值达到 ${params.trailingStop.level1.trigger}% 时，回落至 ${params.trailingStop.level1.stopAt}% 平仓
-       - Level 2: 峰值达到 ${params.trailingStop.level2.trigger}% 时，回落至 ${params.trailingStop.level2.stopAt}% 平仓
-       - Level 3: 峰值达到 ${params.trailingStop.level3.trigger}% 时，回落至 ${params.trailingStop.level3.stopAt}% 平仓
-       - 无需AI手动执行移动止盈，此功能完全由代码保证
+  (2) 移动止盈策略（禁用自动价格止盈，由AI决策）：
+     * 当前策略已禁用自动价格移动止盈，改为AI根据以下因素综合判断：
+       - **筹码峰阻力位**：价格接近筹码密集区上沿时，观察量价关系
+       - **日线趋势结构**：EMA20/60/120 是否出现空头排列迹象
+       - **利空消息**：突发利空、监管消息、大户抛售等异常信号
      
-     * 【AI职责】（重要：AI不需要主动执行止盈平仓）：
-       - AI只需要监控和分析持仓的盈利状态
-       - 在报告中说明当前盈利和峰值回撤情况
-       - 分析趋势是否继续强劲
-       - 禁止主动调用 closePosition 进行止盈平仓
-       - 所有止盈平仓都由自动监控自动执行` : `* 当前策略未启用自动监控移动止盈，AI需要主动监控峰值回撤：
-       - 自己跟踪每个持仓的盈利峰值（使用 peak_pnl_percent 字段）
-       - 当峰值回撤达到阈值时，AI需要主动执行平仓
-       - ${params.name}策略的移动止盈规则（严格执行）：
-         * 盈利达到 +${params.trailingStop.level1.trigger}% 时，止损线移至 +${params.trailingStop.level1.stopAt}%
-         * 盈利达到 +${params.trailingStop.level2.trigger}% 时，止损线移至 +${params.trailingStop.level2.stopAt}%
-         * 盈利达到 +${params.trailingStop.level3.trigger}% 时，止损线移至 +${params.trailingStop.level3.stopAt}%
-       - AI必须在分析持仓时主动计算和判断是否触发移动止盈`}
+     * 【AI职责】：
+       - 监控持仓的峰值盈利（使用 peak_pnl_percent 字段）
+       - 当价格接近筹码峰阻力位时，评估是否应该止盈
+       - 当日线出现空头排列早期信号时，果断止盈
+       - 当出现利空异常时，立即止盈
+       - 在报告中说明止盈决策的依据
+     
+     * 峰值回撤保护（危险信号）：
+       - ${params.name}策略的峰值回撤阈值：${params.peakDrawdownProtection}%
+       - 如果持仓曾达到峰值盈利，当前盈利从峰值回撤 ≥ ${params.peakDrawdownProtection}%
+       - 强烈建议：立即平仓或至少减仓50%
+       - 例外情况：有明确证据表明只是正常回调（如测试均线支撑）
   
-  (3) 止盈策略（务必落袋为安，不要过度贪婪）：
-     * 激进策略核心教训：贪婪是盈利的敌人！
-       - **宁可早点止盈，也不要利润回吐后止损**
-       - **小的确定性盈利 > 大的不确定性盈利**
-       - **盈利 ≥ 10% 就要开始考虑分批止盈，不要死等高目标**
+  (3) 止盈策略（筹码峰视角 + 70%月涨全平规则）：
      
-     * 【技术面强制止盈信号】（出现任一即触发高度警惕，AI需综合评估后决策）：
-       ① 1d（日线）出现顶部构造：
-          - 1d K线在高位形成双顶/M头/头肩顶等经典顶部形态
-          - 1d 价格创新高但 MACD/RSI 出现顶背离（价格新高，指标未新高）
-          - 1d EMA20 斜率由正转负或明显拐头向下
-          - 1d 出现长上影线/十字星/乌云盖顶等见顶K线组合
-          → 顶部构造≠立即平仓！AI需要综合以下维度评估后再决策：
-            · 市场情绪：是否极度贪婪（Fear & Greed Index > 80）？散户是否大面积追涨？
-            · 量价关系：是否放量滞涨（成交量放大但价格不涨）？
-            · 消息面：是否利好满天飞、媒体一致看多、"这次不一样"叙事盛行？
-            · 技术指标：RSI是否严重超买（>80）？MACD是否高位死叉？
-            · 均线结构：EMA20是否仍在EMA60上方且向上发散？趋势是否完好？
-            · 如果上述多项信号同时出现 → 应当全部或大部分平仓
-            · 如果只是形态预警但趋势完好、情绪中性 → 可继续持有但收紧止损
+     * 【70%月涨全平规则 - 系统自动执行】：
+       - 如果持仓约30天（25-35天范围内）且价格涨幅 ≥ 70%，系统自动100%全平
+       - 这是硬性规则，AI不需要手动执行
+     
+     * 【AI主动止盈 - 筹码峰视角】：
+       **核心逻辑**：遇到阻力位 + 日线空头排列 或 利空异常 → 止盈
        
-       ② 20/60/120 均线开始出现空头排列：
-          - 空头排列定义：EMA20 < EMA60 < EMA120（短期均线在长期均线下方）
-          - 关注「开始出现」的阶段：EMA20 下穿 EMA60（死叉），且 EMA60 也开始拐头向下
-          - 不需要等待完全排列成型，只要出现 EMA20 下穿 EMA60 的早期信号就应警惕
-          - 结合 1d 周期判断：1d 出现均线空头排列 = 趋势反转确认，应当全部平仓
-          - 结合 1h 周期判断：1h 出现均线空头排列 = 中期趋势转弱，建议至少减仓50%
-          → 均线空头排列是多空力量逆转的铁证，但AI仍应结合当前盈利水平和市场结构做最终裁决
+       ① 筹码峰阻力位止盈信号：
+          - 价格接近筹码密集区上沿（前期高点、成交密集区）
+          - 观察量价关系：放量滞涨（成交量放大但价格不涨）= 主力出货
+          - 缩量突破失败 = 假突破，立即止盈
+          - 筹码峰从下方支撑转为上方阻力 = 趋势反转确认
+       
+       ② 日线级别下跌趋势判断（果断平仓，等待机会）：
+          - 1d EMA20 下穿 EMA60（死叉），且 EMA60 开始拐头向下
+          - 1d EMA20/60/120 出现空头排列早期信号
+          - 1d 价格跌破 MA200 牛熊线 = 中期趋势转空
+          - 1d MACD 高位死叉且绿柱放大
+          - 1d RSI 从超买区（>70）回落至50以下
+          → 出现以上任一信号，AI应果断平仓，等待下一次开仓机会
+       
+       ③ 利空异常情况止盈：
+          - 突发监管利空（政策打压、交易所被调查等）
+          - 大户/机构大规模抛售（链上数据异常、交易所净流入激增）
+          - 市场情绪极端逆转（恐贪指数从>80骤降至<30）
+          - 黑天鹅事件（交易所暴雷、稳定币脱锚等）
+          → 出现以上情况，立即止盈，不要犹豫
      
-     * 止盈分级执行（强烈建议，不是可选）：
-       - 盈利 ≥ +10% → 评估趋势强度，趋势减弱则提前平仓
-       - 盈利 ≥ +${params.partialTakeProfit.stage1.trigger}% → 强烈建议平仓${params.partialTakeProfit.stage1.closePercent}%（首次收割）
-       - 盈利 ≥ +${params.partialTakeProfit.stage2.trigger}% → 强烈建议平仓剩余${params.partialTakeProfit.stage2.closePercent}%（大部分落袋）
-       - 盈利 ≥ +${params.partialTakeProfit.stage3.trigger}% → 全部清仓（利润完全落袋）
-       - **关键时机判断**：
-         * 趋势减弱/出现反转信号 → 立即全部止盈，不要犹豫
-         * 阻力位/压力位附近 → 先平50%，观察突破情况
-         * 震荡行情 → 有盈利就及时平仓
-         * 持仓时间 ≥ 3小时且盈利 ≥ 8% → 考虑主动平仓50%
-         * 持仓时间 ≥ 6小时且盈利 ≥ 5% → 强烈建议全部平仓
+     * 止盈执行原则：
+       - 趋势减弱/出现反转信号 → 立即全部止盈，不要犹豫
+       - 阻力位/压力位附近 → 先平50%，观察突破情况
+       - 震荡行情 → 有盈利就及时平仓
+       - **持仓无时间限制**：不要因为持仓时间长而平仓
+       - **只根据市场结构判断**：趋势完好就持有，趋势破坏就平仓
      
      * 执行方式：使用 closePosition 的 percentage 参数
        - 示例：closePosition(symbol: 'BTC', percentage: 50) 可平掉50%仓位
-     
-     * 反面教训：
-       - 不要想着"再涨一点就平"，这往往导致利润回吐
-       - 不要因为"才涨了X%"就不平仓，X%的利润也是利润
-       - 不要死等策略目标，市场不会按你的计划走
   
   (4) 峰值回撤保护（危险信号）：
      * ${params.name}策略的峰值回撤阈值：${params.peakDrawdownProtection}%（已根据风险偏好优化）
@@ -1914,11 +1872,6 @@ ${strategySpecificContent}
      * 示例：峰值+${Math.round(params.peakDrawdownProtection * 1.2)}% → 当前+${Math.round(params.peakDrawdownProtection * 0.2)}%，回撤${params.peakDrawdownProtection}%（危险！）
      * 强烈建议：立即平仓或至少减仓50%
      * 例外情况：有明确证据表明只是正常回调（如测试均线支撑）
-  
-  (5) 时间止盈建议：
-     * 盈利 > 25% 且持仓 ≥ 4小时 → 可考虑主动获利了结
-     * 持仓 > 24小时且未盈利 → 考虑平仓释放资金
-     * 系统会在${RISK_PARAMS.MAX_HOLDING_HOURS}小时强制平仓，您无需在${RISK_PARAMS.MAX_HOLDING_HOURS - 1}小时主动平仓
 - 账户级风控保护：
   * 注意账户回撤情况，谨慎交易
 

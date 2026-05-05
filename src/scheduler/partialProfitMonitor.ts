@@ -17,21 +17,13 @@
  */
 
 /**
- * 分批止盈监控器 - 每10秒执行一次
+ * 分批止盈/月涨全平监控器 - 每10秒执行一次
  * 
- * 功能说明：
- * - 根据策略的 partialTakeProfit 配置自动执行分批平仓
- * - 通过 enableCodeLevelProtection 控制是否启用
- * - 跟踪 partial_close_percentage 防止重复触发
- * 
- * 策略适用范围：
- * - enableCodeLevelProtection = false: 禁用，由 AI 主动决策
- * - enableCodeLevelProtection = true: 启用，代码自动执行
- * 
- * 分批止盈规则（示例 - rebate-farming 策略）：
- * - Stage 1: 盈利达到 3% 时，平仓 70%
- * - Stage 2: 盈利达到 6% 时，平仓剩余 30%（累计 100%）
- * - Stage 3: 盈利达到 10% 时，全部平仓（兜底）
+ * v8.0 功能说明：
+ * - 70%月涨全平规则：始终执行，不受策略配置控制（持仓25-35天且涨幅≥70%自动全平）
+ * - 其他分批止盈规则：根据 enableAutoTrailingStop 决定是否执行
+ * - 趋势跟踪策略（trend-following）：enableAutoTrailingStop=false，禁用自动价格止盈，止盈由AI根据筹码峰阻力+日线空头排列决策
+ * - 其他策略：enableAutoTrailingStop 默认 true，启用自动价格止盈
  * 
  * 重要说明：
  * - 每个持仓独立跟踪已平仓比例
@@ -386,12 +378,14 @@ let monitorInterval: NodeJS.Timeout | null = null;
 let isRunning = false;
 
 /**
- * 检查当前策略是否启用代码级分批止盈
+ * 检查当前策略是否启用自动移动止盈
+ * 新策略：趋势跟踪策略禁用自动价格止盈，但保留70%月涨全平规则
+ * 注意：70%月涨全平规则不受此函数返回值控制，始终执行
  */
-function isPartialProfitEnabled(): boolean {
+function isAutoTrailingStopEnabled(): boolean {
   const strategy = getTradingStrategy();
   const params = getStrategyParams(strategy);
-  return params.enableCodeLevelProtection === true;
+  return params.enableAutoTrailingStop !== false;
 }
 
 /**
@@ -432,12 +426,9 @@ async function checkPartialProfitConditions() {
     return;
   }
   
-  // 检查是否启用代码级分批止盈
-  const autoCloseEnabled = isPartialProfitEnabled();
-  if (!autoCloseEnabled) {
-    // 未启用，不执行自动平仓
-    return;
-  }
+  // 70%月涨全平规则：不受 enableCodeLevelProtection 控制，始终执行
+  // 其他分批止盈规则：根据 enableAutoTrailingStop 决定是否执行
+  const autoCloseEnabled = isAutoTrailingStopEnabled();
   
   try {
     const exchangeClient = createExchangeClient();
@@ -450,10 +441,16 @@ async function checkPartialProfitConditions() {
       return;
     }
     
-    // 2. 从数据库获取持仓信息（获取已平仓比例）
-    const dbResult = await dbClient.execute("SELECT symbol, partial_close_percentage FROM positions");
-    const dbPartialCloseMap = new Map(
-      dbResult.rows.map((row: any) => [row.symbol, Number.parseFloat(row.partial_close_percentage as string || "0")])
+    // 2. 从数据库获取持仓信息（获取已平仓比例 + 开仓时间）
+    const dbResult = await dbClient.execute("SELECT symbol, partial_close_percentage, opened_at FROM positions");
+    const dbPositionMap = new Map(
+      dbResult.rows.map((row: any) => [
+        row.symbol, 
+        { 
+          partialClosePercent: Number.parseFloat(row.partial_close_percentage as string || "0"),
+          openedAt: row.opened_at as string
+        }
+      ])
     );
     
     // 3. 检查每个持仓
@@ -472,11 +469,59 @@ async function checkPartialProfitConditions() {
         continue;
       }
       
+      // ===== 70%月涨全平规则：始终执行 =====
+      // 计算价格涨幅（不考虑杠杆）
+      const priceGainPercent = entryPrice > 0 
+        ? ((currentPrice - entryPrice) / entryPrice * 100)
+        : 0;
+      
+      // 检查持仓时间是否约30天（±5天）
+      const dbPos = dbPositionMap.get(symbol);
+      if (dbPos?.openedAt) {
+        const openedTime = new Date(dbPos.openedAt);
+        const now = new Date();
+        const holdingDays = (now.getTime() - openedTime.getTime()) / (1000 * 60 * 60 * 24);
+        
+        // 如果持仓约25-35天且价格涨幅 ≥ 70%，果断全平
+        if (holdingDays >= 25 && holdingDays <= 35 && priceGainPercent >= 70) {
+          logger.warn(`【70%月涨全平规则】${symbol} ${side}:`);
+          logger.warn(`  持仓天数: ${holdingDays.toFixed(1)}天`);
+          logger.warn(`  价格涨幅: ${priceGainPercent.toFixed(2)}%（阈值: 70%）`);
+          logger.warn(`  杠杆倍数: ${leverage}x，杠杆后盈亏: ${(priceGainPercent * leverage).toFixed(2)}%`);
+          logger.warn(`  执行: 100%全平止盈`);
+          
+          const success = await executePartialClose(
+            symbol,
+            side,
+            quantity,
+            entryPrice,
+            currentPrice,
+            leverage,
+            priceGainPercent * leverage,
+            100,  // 全平
+            100,  // 累计100%
+            "70%月涨全平"
+          );
+          
+          if (success) {
+            logger.info(`${symbol} 70%月涨全平成功`);
+          }
+          continue;  // 已全平，跳过后续检查
+        }
+      }
+      
+      // ===== 其他分批止盈规则（仅当 enableAutoTrailingStop 不为 false 时执行）=====
+      if (!autoCloseEnabled) {
+        continue;
+      }
+      
       // 计算盈利百分比（考虑杠杆）
-      const pnlPercent = calculatePnlPercent(entryPrice, currentPrice, side, leverage);
+      const pnlPercent = entryPrice > 0 
+        ? ((currentPrice - entryPrice) / entryPrice * 100 * (side === 'long' ? 1 : -1) * leverage)
+        : 0;
       
       // 获取已平仓比例
-      const alreadyClosedPercent = dbPartialCloseMap.get(symbol) || 0;
+      const alreadyClosedPercent = dbPos?.partialClosePercent || 0;
       
       // 检查是否应该触发分批止盈
       const partialProfitResult = checkPartialProfit(pnlPercent, alreadyClosedPercent);
@@ -520,7 +565,7 @@ export function startPartialProfitMonitor() {
   }
   
   const strategy = getTradingStrategy();
-  const autoCloseEnabled = isPartialProfitEnabled();
+  const autoCloseEnabled = isAutoTrailingStopEnabled();
   
   isRunning = true;
   

@@ -17,27 +17,16 @@
  */
 
 /**
- * 止损监控器 - 每10秒执行一次（根据策略配置启用）
+ * 止损监控器 - 每10秒执行一次
  * 
- * 适用范围：
- * - 策略配置 enableCodeLevelProtection = true 时启用
- * - 默认只有 swing-trend（波段趋势策略）启用，其他策略可根据需要启用
- * - 直接使用策略的 stopLoss 配置，根据杠杆范围自动映射到 low/mid/high
- * 
- * 功能：
- * 1. 每10秒从Gate.io获取最新持仓价格（markPrice）
- * 2. 计算每个持仓的当前盈亏百分比
- * 3. 根据止损规则判断是否触发止损（基于杠杆倍数动态映射）
- * 4. 触发时立即平仓，记录到交易历史和决策数据
- * 
- * 止损规则（示例 - swing-trend 策略）：
- * - 低风险（5-7倍杠杆）：亏损达到 -6% 时止损
- * - 中风险（8-12倍杠杆）：亏损达到 -5% 时止损
- * - 高风险（13倍以上杠杆）：亏损达到 -4% 时止损
+ * v8.0 统一硬止损策略：
+ * - 不管杠杆倍数（1x/2x/3x），BTC 价格距离开仓价下跌 11% 即强制平仓
+ * - 标记交易失败 → 分析原因 → 提出优化策略（需用户确认验证）
+ * - 止盈不再由自动监控执行，改为 AI 根据筹码峰阻力+日线空头排列决策
  * 
  * 注意：
  * - 每个持仓独立监控，不是整体账户
- * - 盈亏计算已考虑杠杆倍数
+ * - 价格跌幅计算不考虑杠杆（与杠杆后盈亏百分比分开记录）
  * - 不由AI执行止损，完全自动化
  */
 
@@ -47,6 +36,7 @@ import { createExchangeClient } from "../services/exchangeClient";
 import { getChinaTimeISO } from "../utils/timeUtils";
 import { getQuantoMultiplier } from "../utils/contractUtils";
 import { getTradingStrategy, getStrategyParams } from "../agents/tradingAgent";
+import { RISK_PARAMS } from "../config/riskParams";
 
 const logger = createLogger({
   name: "stop-loss-monitor",
@@ -191,6 +181,15 @@ function calculatePnlPercent(entryPrice: number, currentPrice: number, side: str
     ? ((currentPrice - entryPrice) / entryPrice * 100 * (side === 'long' ? 1 : -1))
     : 0;
   return priceChangePercent * leverage;
+}
+
+/**
+ * 计算价格变动百分比（不考虑杠杆）— 用于统一-11%硬止损
+ */
+function calculatePriceDropPercent(entryPrice: number, currentPrice: number, side: string): number {
+  return entryPrice > 0 
+    ? ((currentPrice - entryPrice) / entryPrice * 100 * (side === 'long' ? 1 : -1))
+    : 0;
 }
 
 /**
@@ -525,7 +524,9 @@ async function checkStopLoss() {
         continue;
       }
       
-      // 计算盈亏百分比（考虑杠杆）
+      // 计算价格变动百分比（不考虑杠杆）— 统一 -11% 硬止损
+      const priceDropPercent = calculatePriceDropPercent(entryPrice, currentPrice, side);
+      // 同时计算杠杆后盈亏（用于日志显示）
       const pnlPercent = calculatePnlPercent(entryPrice, currentPrice, side, leverage);
       
       // 获取或初始化监控历史记录
@@ -536,31 +537,24 @@ async function checkStopLoss() {
           checkCount: 0,
         };
         positionMonitorHistory.set(symbol, history);
-        logger.info(`${symbol} 开始监控止损，当前盈亏: ${pnlPercent.toFixed(2)}%`);
+        logger.info(`${symbol} 开始监控止损，价格变动: ${priceDropPercent.toFixed(2)}%，杠杆后盈亏: ${pnlPercent.toFixed(2)}%`);
       }
       
       // 增加检查次数
       history.checkCount++;
       history.lastCheckTime = now;
-      
-      const dbResult = await dbClient.execute({
-        sql: "SELECT stop_loss, partial_close_percentage FROM positions WHERE symbol = ? LIMIT 1",
-        args: [symbol],
-      });
-      const dbPosition = dbResult.rows[0] as any;
-      const stopLossOverride = parseNullableNumber(dbPosition?.stop_loss);
-      const partialClosePercentage = parseNullableNumber(dbPosition?.partial_close_percentage) ?? 0;
 
-      // 3. 检查止损条件
-      const thresholdInfo = getStopLossThreshold(leverage, stopLossOverride, partialClosePercentage);
+      // 统一硬止损：不管杠杆多少倍，价格跌幅达到阈值即平仓
+      const UNIFIED_STOP_LOSS = RISK_PARAMS.EXTREME_STOP_LOSS_PERCENT; // -11%（配置在 riskParams.ts）
       
-      // 检查是否触发止损（亏损达到或超过止损线）
-      if (pnlPercent <= thresholdInfo.threshold) {
-        logger.error(`${symbol} 触发止损条件:`);
-        logger.error(`  风险等级: ${thresholdInfo.level} - ${thresholdInfo.description}`);
-        logger.error(`  杠杆倍数: ${leverage}x`);
-        logger.error(`  当前亏损: ${pnlPercent.toFixed(2)}%`);
-        logger.error(`  止损线: ${thresholdInfo.threshold.toFixed(2)}%`);
+      // 检查是否触发止损
+      if (priceDropPercent <= UNIFIED_STOP_LOSS) {
+        logger.error(`${symbol} 触发统一硬止损:`);
+        logger.error(`  开仓价: ${entryPrice}`);
+        logger.error(`  当前价: ${currentPrice}`);
+        logger.error(`  价格跌幅: ${priceDropPercent.toFixed(2)}%（阈值: ${UNIFIED_STOP_LOSS}%）`);
+        logger.error(`  杠杆倍数: ${leverage}x，杠杆后亏损: ${pnlPercent.toFixed(2)}%`);
+        logger.error(`  【交易失败】标记此笔交易为失败，分析原因，提出优化策略（需用户确认）`);
         
         // 执行止损平仓
         const success = await executeStopLossClose(
@@ -570,9 +564,9 @@ async function checkStopLoss() {
           entryPrice,
           currentPrice,
           leverage,
-          pnlPercent,
-          thresholdInfo.threshold,
-          `${thresholdInfo.level} - ${thresholdInfo.description}`
+          priceDropPercent,
+          UNIFIED_STOP_LOSS,
+          `统一硬止损（价格跌${priceDropPercent.toFixed(2)}%）`
         );
         
         if (success) {
@@ -581,7 +575,7 @@ async function checkStopLoss() {
       } else {
         // 每10次检查输出一次调试日志
         if (history.checkCount % 10 === 0) {
-          logger.debug(`${symbol} ${thresholdInfo.level} 监控中: ${leverage}x杠杆, 当前${pnlPercent.toFixed(2)}%, 止损线${thresholdInfo.threshold.toFixed(2)}%`);
+          logger.debug(`${symbol} 统一硬止损监控中: 价格变动${priceDropPercent.toFixed(2)}%，止损线${UNIFIED_STOP_LOSS}%，杠杆${leverage}x`);
         }
       }
     }

@@ -151,12 +151,14 @@ let monitorInterval: NodeJS.Timeout | null = null;
 let isRunning = false;
 
 /**
- * 检查当前策略是否启用代码级移动止盈
+ * 检查当前策略是否启用自动移动止盈
+ * 新策略：趋势跟踪策略禁用自动价格止盈，改为AI根据筹码峰阻力+日线空头排列决策
  */
 function isTrailingStopEnabled(): boolean {
   const strategy = getTradingStrategy();
   const params = getStrategyParams(strategy);
-  return params.enableCodeLevelProtection === true;
+  // 使用新的 enableAutoTrailingStop 字段（默认 true 保持向后兼容）
+  return params.enableAutoTrailingStop !== false;
 }
 
 /**
@@ -745,7 +747,7 @@ export function startTrailingStopMonitor() {
   logger.info(``);
   logger.info(`  【持仓峰值监控】`);
   logger.info(`    峰值更新: ✅ 启用（所有策略）`);
-  logger.info(`    自动平仓: ${autoCloseEnabled ? '✅ 启用（波段策略）' : '❌ 禁用（由 AI 决策）'}`);
+  logger.info(`    自动平仓: ${autoCloseEnabled ? '✅ 启用（波段策略）' : '❌ 禁用（AI根据筹码峰阻力+日线空头排列决策）'}`);
   logger.info(``);
   logger.info(`  【账户净值峰值监控】`);
   logger.info(`    峰值更新: ✅ 启用（所有策略）`);

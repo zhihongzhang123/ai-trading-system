@@ -4,14 +4,10 @@
 
 [![VoltAgent](https://img.shields.io/badge/Framework-VoltAgent-purple.svg)](https://voltagent.dev)
 [![OpenAI Compatible](https://img.shields.io/badge/AI-OpenAI_Compatible-orange.svg)](https://openrouter.ai)
-[![Gate.io](https://img.shields.io/badge/Exchange-Gate.io-00D4AA.svg)](https://www.gatesite.org/signup/NOFIAIOO?ref_type=103)
 [![OKX](https://img.shields.io/badge/Exchange-OKX-000000.svg)](https://www.okx.com/zh-hans/join/nofiaioo)
 [![TypeScript](https://img.shields.io/badge/Language-TypeScript-3178C6.svg?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
 [![Node.js](https://img.shields.io/badge/Runtime-Node.js%2020+-339933.svg?logo=node.js&logoColor=white)](https://nodejs.org)
 [![License](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](./LICENSE)
-
-| [English](./README_EN.md) | [简体中文](./README_ZH.md) | [日本語](./README_JA.md) |
-|:---:|:---:|:---:|
 
 </div>
 
@@ -19,7 +15,7 @@
 
 AI Trading System 是一个 AI 驱动的加密货币自动交易系统，将大语言模型智能与量化交易实践深度融合。系统基于 Agent 框架构建，通过赋予 AI 完全的市场分析和交易决策自主权，实现真正的智能化交易。
 
-本系统采用**最小人工干预**的设计理念，摒弃传统的硬编码交易规则，让 AI 模型基于原始市场数据进行自主学习和决策。系统集成 Gate.io 和 OKX 交易所（支持测试网和正式网），提供完整的永续合约交易能力，覆盖 BTC、ETH、SOL 等主流加密货币，支持从数据采集、智能分析、风险管理到交易执行的全流程自动化。
+本系统采用**最小人工干预**的设计理念，摒弃传统的硬编码交易规则，让 AI 模型基于原始市场数据进行自主学习和决策。系统当前配置为 **BTC 永续合约只做多** 策略（1-3x 杠杆），集成 OKX 交易所，提供完整的从数据采集、智能分析、风险管理到交易执行的全流程自动化。
 
 ![AI Trading System](./public/image.png)
 

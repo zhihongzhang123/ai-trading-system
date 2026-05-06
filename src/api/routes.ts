@@ -524,6 +524,53 @@ export function createApiRoutes() {
   });
 
   /**
+   * 获取K线数据（用于前端烛台图）
+   */
+  app.get("/api/candles", async (c) => {
+    try {
+      const symbol = c.req.query("symbol") || "BTC";
+      const interval = c.req.query("interval") || "1h";
+      const limit = parseInt(c.req.query("limit") || "200");
+
+      const exchangeClient = createExchangeClient();
+      const contract = `${symbol}_USDT`;
+      const candles = await exchangeClient.getFuturesCandles(contract, interval, limit);
+
+      // 转换为前端格式
+      const result = candles.map((candle: any) => {
+        if (candle && typeof candle === "object" && "t" in candle) {
+          // OKX FuturesCandlestick 对象格式 (t 已是秒级时间戳)
+          return {
+            time: Number(candle.t),
+            open: Number.parseFloat(candle.o),
+            high: Number.parseFloat(candle.h),
+            low: Number.parseFloat(candle.l),
+            close: Number.parseFloat(candle.c),
+            volume: Number.parseFloat(candle.v),
+          };
+        }
+        // 数组格式兼容
+        if (Array.isArray(candle)) {
+          return {
+            time: Math.floor(candle[0] / 1000),
+            open: Number.parseFloat(candle[1]),
+            high: Number.parseFloat(candle[2]),
+            low: Number.parseFloat(candle[3]),
+            close: Number.parseFloat(candle[4]),
+            volume: Number.parseFloat(candle[5] || "0"),
+          };
+        }
+        return null;
+      }).filter(Boolean);
+
+      return c.json({ symbol, interval, candles: result });
+    } catch (error: any) {
+      logger.error("获取K线数据失败:", error);
+      return c.json({ error: error.message }, 500);
+    }
+  });
+
+  /**
    * 获取多个币种的实时价格
    */
   app.get("/api/prices", async (c) => {

@@ -10,6 +10,14 @@ class TradingMonitor {
         this.chartTimeframe = '24';
         this.lastIndicators = null;  // 缓存最新指标数据
         this.lastStructured = null;  // 缓存最新结构化决策
+        this.klineChart = null;       // lightweight-charts 实例
+        this.klineSeries = null;      // K线系列
+        this.klineVolumeSeries = null; // 成交量系列
+        this.ema20Series = null;      // EMA20 均线
+        this.ema60Series = null;      // EMA60 均线
+        this.ema120Series = null;     // EMA120 均线
+        this.klineInterval = '5m';    // 当前周期（默认5m）
+        this.klineRefreshTimer = null; // 自动刷新定时器
     }
 
     /** 从 CSS 变量读取颜色值，支持主题切换 */
@@ -20,6 +28,8 @@ class TradingMonitor {
     async init() {
         await this.loadInitialData();
         this.initEquityChart();
+        this.initKlineChart();
+        this.initKlineControls();
         this.initColorSchemeToggle();
         this.initDecisionToggle();
         this.startDataUpdates();
@@ -38,7 +48,8 @@ class TradingMonitor {
                 this.loadIndicatorsData(),
                 this.loadQualityScores(),
                 this.loadPerformanceOverview(),
-                this.loadSentimentData()
+                this.loadSentimentData(),
+                this.loadKlineData()
             ]);
         } catch (error) {
             console.error('加载初始数据失败:', error);
@@ -727,6 +738,9 @@ class TradingMonitor {
 
         // 每60秒更新资产曲线
         setInterval(async () => { await this.updateEquityChart(); }, 60000);
+
+        // 每30秒更新K线数据
+        this.startKlineUpdates();
     }
 
     // ---- 资产曲线 ----
@@ -1077,6 +1091,233 @@ class TradingMonitor {
     removeToast(toast) {
         toast.classList.add('toast-removing');
         setTimeout(() => { toast.remove(); }, 300);
+    }
+
+    // ---- K线图表 (lightweight-charts) ----
+    initKlineChart() {
+        const chartContainer = document.getElementById('kline-chart');
+        if (!chartContainer) {
+            console.warn('未找到K线图表容器');
+            return;
+        }
+
+        // 检查 lightweight-charts 是否加载
+        if (typeof LightweightCharts === 'undefined') {
+            console.warn('lightweight-charts 未加载，K线图不可用');
+            return;
+        }
+
+        const isUpRed = document.body.classList.contains('color-mode-reversed');
+
+        this.klineChart = LightweightCharts.createChart(chartContainer, {
+            width: chartContainer.clientWidth,
+            height: 300,
+            layout: {
+                background: { type: 'solid', color: '#000000' },
+                textColor: '#9ca3af',
+                fontSize: 11,
+            },
+            grid: {
+                vertLines: { color: 'rgba(0, 255, 170, 0.06)' },
+                horzLines: { color: 'rgba(0, 255, 170, 0.06)' },
+            },
+            crosshair: {
+                mode: LightweightCharts.CrosshairMode.Normal,
+            },
+            rightPriceScale: {
+                borderColor: 'rgba(0, 255, 170, 0.2)',
+                scaleMargins: { top: 0.1, bottom: 0.3 },
+            },
+            timeScale: {
+                borderColor: 'rgba(0, 255, 170, 0.2)',
+                timeVisible: true,
+                secondsVisible: false,
+            },
+        });
+
+        // K线系列
+        this.klineSeries = this.klineChart.addCandlestickSeries({
+            upColor: isUpRed ? '#ff0000' : '#00ffaa',
+            downColor: isUpRed ? '#00ffaa' : '#ff0000',
+            borderUpColor: isUpRed ? '#ff0000' : '#00ffaa',
+            borderDownColor: isUpRed ? '#00ffaa' : '#ff0000',
+            wickUpColor: isUpRed ? '#ff0000' : '#00ffaa',
+            wickDownColor: isUpRed ? '#00ffaa' : '#ff0000',
+        });
+
+        // 成交量系列（底部）
+        this.klineVolumeSeries = this.klineChart.addHistogramSeries({
+            priceFormat: { type: 'volume' },
+            priceScaleId: 'volume',
+        });
+
+        this.klineChart.priceScale('volume').applyOptions({
+            scaleMargins: { top: 0.75, bottom: 0 },
+        });
+
+        // EMA 均线系列
+        const emaColors = {
+            ema20: isUpRed ? '#ff6b6b' : '#00cc88',   // 青绿
+            ema60: isUpRed ? '#ffa94d' : '#ffaa00',   // 橙色
+            ema120: isUpRed ? '#74c0fc' : '#5c7cfa',  // 蓝色
+        };
+
+        this.ema20Series = this.klineChart.addLineSeries({
+            color: emaColors.ema20,
+            lineWidth: 1,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+        });
+
+        this.ema60Series = this.klineChart.addLineSeries({
+            color: emaColors.ema60,
+            lineWidth: 1,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+        });
+
+        this.ema120Series = this.klineChart.addLineSeries({
+            color: emaColors.ema120,
+            lineWidth: 1,
+            priceLineVisible: false,
+            lastValueVisible: false,
+            crosshairMarkerVisible: false,
+        });
+
+        // 添加图例标签
+        this.klineChart.applyOptions({
+            localization: {
+                priceFormatter: (price) => price.toFixed(1),
+            },
+        });
+
+        // 自适应窗口大小
+        const resizeObserver = new ResizeObserver(entries => {
+            for (const entry of entries) {
+                this.klineChart.applyOptions({ width: entry.contentRect.width });
+            }
+        });
+        resizeObserver.observe(chartContainer);
+    }
+
+    initKlineControls() {
+        const buttons = document.querySelectorAll('.kline-tf-btn');
+        buttons.forEach(btn => {
+            btn.addEventListener('click', () => {
+                const tf = btn.getAttribute('data-tf');
+                if (tf && tf !== this.klineInterval) {
+                    // 更新按钮状态
+                    buttons.forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    this.klineInterval = tf;
+                    this.loadKlineData();
+                }
+            });
+        });
+    }
+
+    async loadKlineData() {
+        try {
+            const response = await fetch(`/api/candles?symbol=BTC&interval=${this.klineInterval}&limit=200`, { cache: 'no-cache' });
+            const data = await response.json();
+            if (data.error) { console.error('K线API错误:', data.error); return; }
+            if (!data.candles || data.candles.length === 0) return;
+
+            this.updateKlineDisplay(data.candles);
+        } catch (error) {
+            console.error('加载K线数据失败:', error);
+        }
+    }
+
+    updateKlineDisplay(candles) {
+        if (!this.klineSeries || !this.klineVolumeSeries) return;
+
+        // 转换K线数据格式
+        const klineData = candles.map(c => ({
+            time: c.time,
+            open: c.open,
+            high: c.high,
+            low: c.low,
+            close: c.close,
+        }));
+
+        // 计算 EMA
+        const closes = candles.map(c => c.close);
+        const ema20Data = this.calculateEMA(closes, 20).map((val, i) => val !== null ? { time: candles[i].time, value: val } : null).filter(Boolean);
+        const ema60Data = this.calculateEMA(closes, 60).map((val, i) => val !== null ? { time: candles[i].time, value: val } : null).filter(Boolean);
+        const ema120Data = this.calculateEMA(closes, 120).map((val, i) => val !== null ? { time: candles[i].time, value: val } : null).filter(Boolean);
+
+        // 成交量数据，根据涨跌着色
+        const isUpRed = document.body.classList.contains('color-mode-reversed');
+        const volumeData = candles.map(c => ({
+            time: c.time,
+            value: c.volume,
+            color: c.close >= c.open
+                ? (isUpRed ? 'rgba(255,0,0,0.35)' : 'rgba(0,255,170,0.35)')
+                : (isUpRed ? 'rgba(0,255,170,0.35)' : 'rgba(255,0,0,0.35)'),
+        }));
+
+        this.klineSeries.setData(klineData);
+        this.klineVolumeSeries.setData(volumeData);
+        this.ema20Series.setData(ema20Data);
+        this.ema60Series.setData(ema60Data);
+        this.ema120Series.setData(ema120Data);
+
+        // 更新价格栏
+        const lastCandle = candles[candles.length - 1];
+        const firstCandle = candles[0];
+        const priceEl = document.getElementById('kline-price');
+        const changeEl = document.getElementById('kline-change');
+
+        if (priceEl) {
+            priceEl.textContent = `$${lastCandle.close.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}`;
+        }
+        if (changeEl && firstCandle) {
+            const change = lastCandle.close - firstCandle.open;
+            const changePercent = ((change / firstCandle.open) * 100).toFixed(2);
+            const isUp = change >= 0;
+            changeEl.textContent = `${isUp ? '+' : ''}${changePercent}%`;
+            changeEl.className = `kline-change ${isUp ? 'up' : 'down'}`;
+        }
+    }
+
+    // 计算 EMA（返回数组，不足数据的位置为 null）
+    calculateEMA(prices, period) {
+        const result = [];
+        const k = 2 / (period + 1);
+
+        // 需要足够的初始数据
+        if (prices.length < period) {
+            return prices.map(() => null);
+        }
+
+        // 用 SMA 作为 EMA 的初始值
+        let ema = prices.slice(0, period).reduce((a, b) => a + b, 0) / period;
+
+        // 填充前面的 null
+        for (let i = 0; i < period - 1; i++) {
+            result.push(null);
+        }
+        result.push(ema);
+
+        // 计算后续 EMA
+        for (let i = period; i < prices.length; i++) {
+            ema = prices[i] * k + ema * (1 - k);
+            result.push(ema);
+        }
+
+        return result;
+    }
+
+    startKlineUpdates() {
+        // 清除旧定时器
+        if (this.klineRefreshTimer) clearInterval(this.klineRefreshTimer);
+        // 每30秒刷新K线
+        this.klineRefreshTimer = setInterval(() => {
+            this.loadKlineData();
+        }, 30000);
     }
 
     // ---- 平仓 ----

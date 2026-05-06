@@ -141,16 +141,64 @@ function detectMaBreak(price: number, prevPrice: number, ma: number, maName: str
 }
 
 /**
- * 评估量价关系
+ * 评估量价关系 v3.0 — LEI 四象限价量模型
+ * 
+ * 核心概念（源自老雷 @TheMarketMemo 2023-11-09 五条推文线程）：
+ * - 成交量 = 市场分歧（大量人愿卖 + 大量人愿买）
+ * - 持仓量 = 多空对垒的屯兵量
+ * - 四象限: 价量齐升(消耗式)/缩量涨(共识式)/价跌量增(消耗式)/缩量跌(共识式)
+ * - 成交量突变(>2x均量) = 最重要的转折预警信号，无论涨跌
  */
 function evaluateVolumeAction(currentVol: number, avgVol: number, priceUp: boolean): string {
   if (!Number.isFinite(currentVol) || !Number.isFinite(avgVol) || avgVol === 0) return '量比未知';
   const ratio = currentVol / avgVol;
-  if (ratio > 2.0) return priceUp ? '🔥 巨量上涨（强势放量）' : '⚠️ 巨量下跌（恐慌抛售）';
-  if (ratio > 1.5) return priceUp ? '放量上涨（多头进场）' : '放量下跌（空头打压）';
-  if (ratio < 0.5) return priceUp ? '缩量上涨（动能不足，需警惕）' : '缩量下跌（卖盘衰竭）';
-  if (ratio < 0.7) return '缩量整理';
-  return '量能正常';
+  const isHighVol = ratio > 1.5;
+  const isLowVol = ratio < 0.7;
+  const isSpike = ratio > 2.0;
+
+  let quadrant: string;
+  let regime: string;
+  let sustainability: string;
+  let reversalSignal: string;
+
+  if (priceUp && isHighVol) {
+    quadrant = '① 价量齐升';
+    regime = '消耗式上涨（分歧中上涨，双方伤亡巨大）';
+    sustainability = '❌ 很难持续';
+    reversalSignal = '一旦出现缩量下跌（无抵抗下跌）→ 涨势可能终止';
+  } else if (priceUp && isLowVol) {
+    quadrant = '② 缩量上涨';
+    regime = '共识式上涨（趋势消耗小，最健康的上涨）';
+    sustainability = '✅ 可以涨很久';
+    reversalSignal = '直到出现大量（分歧），原有趋势才可能改变';
+  } else if (!priceUp && isHighVol) {
+    quadrant = '③ 价跌量增';
+    regime = '消耗式下跌（分歧中下跌，双方伤亡巨大）';
+    sustainability = '❌ 很难持久 — 可能是底部吸筹';
+    reversalSignal = '一旦出现缩量上涨（无抵抗上涨）→ 跌势可能终结';
+  } else if (!priceUp && isLowVol) {
+    quadrant = '④ 缩量下跌';
+    regime = '共识式下跌（不要抄底！）';
+    sustainability = '⚠️ 可以跌很久';
+    reversalSignal = '直到出现大量（分歧），原有趋势才可能改变';
+  } else if (priceUp) {
+    quadrant = '② 价涨量平';
+    regime = '温和上涨（量能正常）';
+    sustainability = '中性偏多';
+    reversalSignal = '关注量能变化';
+  } else {
+    quadrant = '④ 价跌量平';
+    regime = '温和下跌（量能正常）';
+    sustainability = '中性偏空';
+    reversalSignal = '关注量能变化';
+  }
+
+  let spikeWarning = '';
+  if (isSpike) {
+    spikeWarning = `\n  🔔 **成交量突变预警**: 放量${ratio.toFixed(1)}x → 无论涨跌，这是最重要的转折信号，必须高度重视！`;
+  }
+
+  return `📊 ${quadrant}\n  模式: ${regime}\n  持续性: ${sustainability}\n  转折信号: ${reversalSignal}${spikeWarning}`;
 }
 
 /**
@@ -198,11 +246,83 @@ function assessTrendInflection(data: any): string {
   if (break60) assessment.push(break60);
   if (break200) assessment.push(break200);
 
-  // 4. 量价评估
+  // 4. 量价评估（LEI 四象限模型）
   const priceUp = price > prevPrice;
-  assessment.push(`量价状态：${evaluateVolumeAction(volume, avgVolume, priceUp)}`);
+  assessment.push(`【量价关系 — LEI 四象限模型】`);
+  assessment.push(evaluateVolumeAction(volume, avgVolume, priceUp));
+
+  // 5. FOMO 缺口检测
+  const highSeries = data?.highSeries ?? [];
+  const lowSeries = data?.lowSeries ?? [];
+  assessment.push(`【FOMO 缺口追踪】`);
+  assessment.push(detectFomoGaps(highSeries, lowSeries));
 
   return assessment.join('\n');
+}
+
+// ==================== FOMO 缺口追踪 ====================
+
+/**
+ * 检测 FOMO 情绪缺口（跳空高开/低开）
+ * 老雷用法: 标记 FOMO 缺口位置，行情涨不动时这些缺口成为下跌目标位
+ */
+function detectFomoGaps(highSeries: number[], lowSeries: number[]): string {
+  if (!highSeries || !lowSeries) return '数据不足';
+  if (highSeries.length < 2) return '序列太短（需≥2根K线）';
+
+  const gaps: string[] = [];
+
+  for (let i = 1; i < highSeries.length; i++) {
+    const prevHigh = highSeries[i - 1];
+    const prevLow = lowSeries[i - 1];
+    const currLow = lowSeries[i];
+    const currHigh = highSeries[i];
+
+    if (!Number.isFinite(prevHigh) || !Number.isFinite(currLow) || !Number.isFinite(prevLow) || !Number.isFinite(currHigh)) continue;
+
+    // 跳空上涨: 当前K线最低价 > 前一根K线最高价（FOMO缺口）
+    if (currLow > prevHigh) {
+      const gapSize = ((currLow - prevHigh) / prevHigh * 100);
+      gaps.push(`⬆️ FOMO缺口↑ 第${i}→${i+1}根: 跳空+${gapSize.toFixed(2)}%（${prevHigh.toFixed(1)}→${currLow.toFixed(1)}），涨不动时此为下跌目标`);
+    }
+    // 跳空下跌: 当前K线最高价 < 前一根K线最低价（恐慌缺口）
+    else if (currHigh < prevLow) {
+      const gapSize = ((prevLow - currHigh) / prevLow * 100);
+      gaps.push(`⬇️ 恐慌缺口↓ 第${i}→${i+1}根: 跳空-${gapSize.toFixed(2)}%（${prevLow.toFixed(1)}→${currHigh.toFixed(1)}），可能成为反弹目标`);
+    }
+  }
+
+  if (gaps.length === 0) return '近期无明显跳空缺口';
+  return gaps.join('\n');
+}
+
+// ==================== 资金费率信号 ====================
+
+/**
+ * 评估资金费率信号
+ * 
+ * 资金费率 = 多空双方的力量平衡成本，每8小时结算一次
+ * - 极端负费率(< -0.01%): 空头拥挤 → 做多有利（空头支付你资金费）
+ * - 极端正费率(> 0.05%): 多头拥挤 → 警惕回调（你支付空头资金费）
+ * - 正常范围: 中性
+ */
+function evaluateFundingRate(rate: number | undefined): string {
+  if (rate === undefined || !Number.isFinite(rate)) return '数据缺失';
+  const ratePercent = rate * 100;
+
+  if (rate < -0.0001) {
+    // 极端负费率 → 空头支付多头
+    return `🚀 极端负费率 ${ratePercent.toFixed(4)}%（空头拥挤 → 做多有利，空头每8小时支付你）`;
+  } else if (rate > 0.0005) {
+    // 极端正费率 → 多头支付空头
+    return `⚠️ 极端正费率 ${ratePercent.toFixed(4)}%（多头拥挤 → 持仓成本高，警惕回调风险）`;
+  } else if (rate > 0.0001) {
+    return `正费率 ${ratePercent.toFixed(4)}%（多头略占优，持仓有轻微成本）`;
+  } else if (rate < -0.00001) {
+    return `负费率 ${ratePercent.toFixed(4)}%（空头略占优，做多有轻微收益）`;
+  } else {
+    return `中性费率 ${ratePercent.toFixed(4)}%（多空平衡）`;
+  }
 }
 
 /**
@@ -512,8 +632,7 @@ RSI(14): ${(data?.rsi14 ?? 0).toFixed(1)}
 `;
       
       if (data?.fundingRate !== undefined) {
-        dataPrompt += `资金费率: ${(data.fundingRate * 100).toFixed(4)}%
-`;
+        dataPrompt += `资金费率信号: ${evaluateFundingRate(data.fundingRate)}\n`;
       }
       
       dataPrompt += `\n`;
@@ -1182,8 +1301,7 @@ ${isCodeLevelProtectionEnabled ? (allowAiOverride ? `│                        
     
     // 资金费率
     if (data.fundingRate !== undefined) {
-      prompt += `此外，这是 ${symbol} 永续合约的最新资金费率（您交易的合约类型）：\n\n`;
-      prompt += `资金费率: ${data.fundingRate.toExponential(2)}\n\n`;
+      prompt += `资金费率信号: ${evaluateFundingRate(data.fundingRate)}\n\n`;
     }
     
     // 5m K线序列（形态识别专用）
@@ -1413,7 +1531,7 @@ ${isCodeLevelProtectionEnabled ? (allowAiOverride ? `│                        
     prompt += `【信号质量评分历史】（最近${recentQualityScores.length}次）\n`;
     prompt += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
     prompt += `质量评分由系统客观计算（0-100分），反映上次信号的综合质量：\n`;
-    prompt += `评分维度：信号共振(30分) + 多周期对齐(25分) + 趋势强度(15分) + 量价确认(15分) + 入场位置(15分)\n\n`;
+    prompt += `评分维度：EMA共振(20分) + 周期对齐(35分) + 趋势强度(20分) + 量价确认(15分) + 入场位置(10分)\n\n`;
     
     for (let i = 0; i < recentQualityScores.length; i++) {
       const qs = recentQualityScores[i];

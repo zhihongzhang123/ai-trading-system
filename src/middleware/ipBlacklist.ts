@@ -111,8 +111,11 @@ function getClientIp(c: Context): string {
 export async function ipBlacklistMiddleware(c: Context, next: Next) {
   const clientIp = getClientIp(c);
   
-  // 记录所有请求的 IP（用于调试）
-  logger.debug(`请求 IP: ${clientIp} - 路径: ${c.req.path} - 方法: ${c.req.method}`);
+  // 记录所有请求的 IP（本地环境跳过，避免日志噪音）
+  const isLocal = clientIp === '127.0.0.1' || clientIp === '::1' || clientIp === 'localhost';
+  if (!isLocal) {
+    logger.debug(`请求 IP: ${clientIp} - 路径: ${c.req.path} - 方法: ${c.req.method}`);
+  }
 
   if (ipBlacklist.has(clientIp)) {
     logger.warn(`🚫 拦截黑名单 IP: ${clientIp} - 路径: ${c.req.path}`);

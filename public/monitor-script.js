@@ -761,6 +761,17 @@ class TradingMonitor {
             return;
         }
 
+        // 计算峰值线和回撤数据
+        const values = historyData.map(d => parseFloat(d.totalValue));
+        const peaks = [];
+        const drawdowns = [];
+        let peak = values[0];
+        for (const v of values) {
+            if (v > peak) peak = v;
+            peaks.push(peak);
+            drawdowns.push(((peak - v) / peak) * 100);
+        }
+
         this.equityChart = new Chart(ctx, {
             type: 'line',
             data: {
@@ -768,17 +779,30 @@ class TradingMonitor {
                     const date = new Date(d.timestamp);
                     return date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
                 }),
-                datasets: [{
-                    label: '总资产 (USDT)',
-                    data: historyData.map(d => parseFloat(d.totalValue.toFixed(2))),
-                    borderColor: this.cssVar('--accent-green'),
-                    backgroundColor: this.cssVar('--accent-green') + '1a',
-                    borderWidth: 2,
-                    fill: true,
-                    tension: 0.4,
-                    pointRadius: 0,
-                    pointHoverRadius: 0
-                }]
+                datasets: [
+                    {
+                        label: '总资产 (USDT)',
+                        data: values.map(v => parseFloat(v.toFixed(2))),
+                        borderColor: this.cssVar('--accent-green'),
+                        backgroundColor: this.cssVar('--accent-green') + '1a',
+                        borderWidth: 2,
+                        fill: true,
+                        tension: 0.4,
+                        pointRadius: 0,
+                        pointHoverRadius: 0
+                    },
+                    {
+                        label: '历史峰值',
+                        data: peaks.map(v => parseFloat(v.toFixed(2))),
+                        borderColor: 'rgba(255, 200, 50, 0.6)',
+                        borderWidth: 1,
+                        borderDash: [5, 5],
+                        fill: false,
+                        tension: 0,
+                        pointRadius: 0,
+                        pointHoverRadius: 0
+                    }
+                ]
             },
             options: {
                 responsive: true,
@@ -798,7 +822,20 @@ class TradingMonitor {
                                 let label = context.dataset.label || '';
                                 if (label) label += ': ';
                                 if (context.parsed.y !== null) label += '$' + context.parsed.y;
+                                // 添加回撤信息
+                                if (context.datasetIndex === 0) {
+                                    const dd = drawdowns[context.dataIndex];
+                                    if (dd > 0) label += ` (回撤 -${dd.toFixed(2)}%)`;
+                                }
                                 return label;
+                            },
+                            afterBody: function (tooltipItems) {
+                                const idx = tooltipItems[0].dataIndex;
+                                const dd = drawdowns[idx];
+                                if (dd > 1) {
+                                    return [`当前回撤: -${dd.toFixed(2)}%`];
+                                }
+                                return [];
                             }
                         }
                     }
@@ -820,6 +857,19 @@ class TradingMonitor {
                 }
             }
         });
+
+        // 在图表标题旁显示最大回撤
+        const maxDD = Math.max(...drawdowns);
+        if (maxDD > 0) {
+            const header = ctx.parentElement?.querySelector('.panel-header');
+            if (header) {
+                const ddBadge = document.createElement('span');
+                ddBadge.className = 'panel-badge';
+                ddBadge.style.cssText = 'background: rgba(239, 68, 68, 0.2); color: #ef4444; font-size: 11px;';
+                ddBadge.textContent = `最大回撤 -${maxDD.toFixed(2)}%`;
+                header.appendChild(ddBadge);
+            }
+        }
     }
 
     async loadEquityHistory() {

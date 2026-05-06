@@ -32,6 +32,8 @@ import { checkRiskGuard, formatRiskGuardForPrompt, calculateSafePositionSize, ca
 import { newsCache, okxCircuitBreaker, CACHE_TTL } from "../services/dataCache.js";
 import { sendNotification, notifyRiskBlocked, notifyCircuitBreaker, notifySystemStart } from "../services/telegramNotifier.js";
 import { extractDecisionJSON, StructuredDecision, decisionToSummary } from "../agents/structuredDecision.js";
+import { VolumeProfileEngine } from "../analysis/volumeProfile/VolumeProfileEngine.js";
+import type { CandleData } from "../analysis/volumeProfile/types.js";
 
 const logger = createLogger({
   name: "trading-loop",
@@ -90,9 +92,11 @@ interface IndicatorSnapshot {
 
 interface QualityScoreResult {
   total: number;           // 总分 0-100
-  trendResonance: number;  // 趋势共振 0-40
-  timeframeAlignment: number; // 周期对齐 0-35
-  volumeConfirmation: number; // 量价确认 0-25
+  resonance: number;       // EMA共振排列 0-20
+  alignment: number;       // 三周期对齐 0-35
+  trend: number;           // 趋势强度(MACD+斜率) 0-20
+  volume: number;          // 量价确认 0-15
+  position: number;        // 入场位置(RSI) 0-10
 }
 
 function calculateQualityScore(
@@ -100,41 +104,23 @@ function calculateQualityScore(
   timeframes: Record<string, IndicatorSnapshot>
 ): QualityScoreResult {
   const result: QualityScoreResult = {
-    total: 0, trendResonance: 0, timeframeAlignment: 0, volumeConfirmation: 0,
+    total: 0, resonance: 0, alignment: 0, trend: 0, volume: 0, position: 0,
   };
 
-  // === 1. 趋势共振 (0-40 分) ===
-  // EMA 短中长期排列 (0-16)
+  // === 1. EMA共振排列 (0-20 分) ===
   const bullish = current.ema20 > current.ema60 && current.ema60 > current.ema120 && current.price > current.ema20;
   const bearish = current.ema20 < current.ema60 && current.ema60 < current.ema120 && current.price < current.ema20;
-  if (bullish) result.trendResonance += 16;
-  else if (bearish) result.trendResonance += 16;
+  if (bullish) result.resonance += 16;
+  else if (bearish) result.resonance += 16;
   // 部分排列（20>60或60>120单边）给8分
   else if ((current.ema20 > current.ema60 && current.price > current.ema20) ||
            (current.ema20 < current.ema60 && current.price < current.ema20)) {
-    result.trendResonance += 8;
+    result.resonance += 8;
   }
   // EMA 粘合扣分（方向不明）
-  if (Math.abs(current.ema20 - current.ema60) / current.ema60 < 0.002) result.trendResonance -= 4;
+  if (Math.abs(current.ema20 - current.ema60) / current.ema60 < 0.002) result.resonance -= 4;
 
-  // K线斜率方向确认 (0-12)
-  // slope20 > 0.05% 表示明显上升，< -0.05% 表示明显下降
-  if (current.slope20 > 0.05) result.trendResonance += 6;
-  else if (current.slope20 < -0.05) result.trendResonance += 6;
-  if (Math.abs(current.slope20) > 0.15) result.trendResonance += 6; // 强趋势
-  else if (Math.abs(current.slope20) > 0.08) result.trendResonance += 3;
-
-  // MACD 动量方向 (0-12) — 只做多系统，仅多方动量加分
-  if (current.macd > 0) result.trendResonance += 6; // 多方动量确认
-  // 空方动量不加分（只做多系统，下跌趋势不视为高质量信号）
-  // MACD绝对值大小（趋势力度）
-  if (current.price > 0) {
-    const macdRatio = Math.abs(current.macd) / current.price * 100;
-    if (macdRatio > 0.5) result.trendResonance += 6;
-    else if (macdRatio > 0.2) result.trendResonance += 3;
-  }
-
-  result.trendResonance = ensureRange(result.trendResonance, 0, 40);
+  result.resonance = ensureRange(result.resonance, 0, 20);
 
   // === 2. 三周期对齐 (0-35 分) ===
   // 5m（短期）/ 1h（中期）/ 1d（长期）三级共振，长期 > 中期 > 短期
@@ -177,39 +163,57 @@ function calculateQualityScore(
       score += 3; // 5m中性
     }
 
-    result.timeframeAlignment = ensureRange(score, 0, 35);
+    result.alignment = ensureRange(score, 0, 35);
 
     // 斜率共振加分：1d和1h斜率同向额外加分
     if (tf1h.slope20 * tf1d.slope20 > 0) {
-      result.timeframeAlignment = Math.min(35, result.timeframeAlignment + 3);
+      result.alignment = Math.min(35, result.alignment + 3);
     }
     // 5m斜率也同向再加1分
     if (tf5m && tf5m.slope20 * tf1h.slope20 > 0) {
-      result.timeframeAlignment = Math.min(35, result.timeframeAlignment + 2);
+      result.alignment = Math.min(35, result.alignment + 2);
     }
   } else {
-    result.timeframeAlignment = 15; // 数据不足
+    result.alignment = 15; // 数据不足
   }
 
-  // === 3. 量价确认 (0-25 分) ===
-  // 量比确认 (0-15)
+  // === 3. 趋势强度 (0-20 分) — MACD动量 + K线斜率 ===
+  // K线斜率方向确认 (0-8)
+  if (current.slope20 > 0.05) result.trend += 4;
+  else if (current.slope20 < -0.05) result.trend += 4;
+  if (Math.abs(current.slope20) > 0.15) result.trend += 4; // 强趋势
+  else if (Math.abs(current.slope20) > 0.08) result.trend += 2;
+
+  // MACD 动量方向 (0-12) — 只做多系统，仅多方动量加分
+  if (current.macd > 0) result.trend += 6; // 多方动量确认
+  // MACD绝对值大小（趋势力度）
+  if (current.price > 0) {
+    const macdRatio = Math.abs(current.macd) / current.price * 100;
+    if (macdRatio > 0.5) result.trend += 6;
+    else if (macdRatio > 0.2) result.trend += 3;
+  }
+
+  result.trend = ensureRange(result.trend, 0, 20);
+
+  // === 4. 量价确认 (0-15 分) ===
   const volumeRatio = current.avgVolume > 0 ? current.volume / current.avgVolume : 1;
-  if (volumeRatio > 1.5) result.volumeConfirmation += 15; // 放量
-  else if (volumeRatio > 1.0) result.volumeConfirmation += 10; // 温和放量
-  else if (volumeRatio > 0.5) result.volumeConfirmation += 5;  // 缩量
+  if (volumeRatio > 1.5) result.volume += 15; // 放量
+  else if (volumeRatio > 1.0) result.volume += 10; // 温和放量
+  else if (volumeRatio > 0.5) result.volume += 5;  // 缩量
   // 极度缩量（<0.3）扣分，代表无参与意愿
-  if (volumeRatio < 0.3) result.volumeConfirmation = Math.max(0, result.volumeConfirmation - 5);
+  if (volumeRatio < 0.3) result.volume = Math.max(0, result.volume - 5);
 
-  // RSI 健康区 (0-10)
-  if (current.rsi14 >= 45 && current.rsi14 <= 65) result.volumeConfirmation += 10; // 健康区间
+  result.volume = ensureRange(result.volume, 0, 15);
+
+  // === 5. 入场位置 (0-10 分) — RSI 健康区 ===
+  if (current.rsi14 >= 45 && current.rsi14 <= 65) result.position += 10; // 健康区间
   else if ((current.rsi14 >= 35 && current.rsi14 < 45) || (current.rsi14 > 65 && current.rsi14 <= 75)) {
-    result.volumeConfirmation += 5; // 偏强/偏弱
+    result.position += 5; // 偏强/偏弱
   }
-  // 极端区域不额外加分（超买超卖不等于反向信号）
 
-  result.volumeConfirmation = ensureRange(result.volumeConfirmation, 0, 25);
+  result.position = ensureRange(result.position, 0, 10);
 
-  result.total = result.trendResonance + result.timeframeAlignment + result.volumeConfirmation;
+  result.total = result.resonance + result.alignment + result.trend + result.volume + result.position;
   return result;
 }
 // 信号量并发控制器 — 限制同时进行的 API 请求数，防止触发交易所风控
@@ -566,6 +570,79 @@ async function collectMarketData() {
           "1d": indicators1d,
         },
       };
+
+      // === 自动计算筹码峰并注入 marketData ===
+      try {
+        const currentPrice = Number.parseFloat(ticker.last || "0");
+        const vpEngine = new VolumeProfileEngine();
+        
+        // 1h 筹码峰（主决策周期）
+        const candles1hAsCandleData = candles1h.map((c: any) => ({
+          time: c.timestamp || 0,
+          open: Number.parseFloat(c.open || "0"),
+          high: Number.parseFloat(c.high || "0"),
+          low: Number.parseFloat(c.low || "0"),
+          close: Number.parseFloat(c.close || "0"),
+          volume: Number.parseFloat(c.volume || "0"),
+        })) as CandleData[];
+        
+        const profile1h = vpEngine.getProfileCached(symbol, candles1hAsCandleData, currentPrice, "1H");
+        
+        // 1d 筹码峰（长期趋势锚点）
+        const candles1dAsCandleData = candles1d.map((c: any) => ({
+          time: c.timestamp || 0,
+          open: Number.parseFloat(c.open || "0"),
+          high: Number.parseFloat(c.high || "0"),
+          low: Number.parseFloat(c.low || "0"),
+          close: Number.parseFloat(c.close || "0"),
+          volume: Number.parseFloat(c.volume || "0"),
+        })) as CandleData[];
+        
+        const profile1d = vpEngine.getProfileCached(symbol, candles1dAsCandleData, currentPrice, "1D");
+        
+        // 注入到 marketData
+        marketData[symbol].volumeProfile = {
+          "1h": profile1h,
+          "1d": profile1d,
+          prompt1h: profile1h ? VolumeProfileEngine.formatForPrompt(profile1h) : "无数据",
+          prompt1d: profile1d ? VolumeProfileEngine.formatForPrompt(profile1d) : "无数据",
+        };
+        
+        logger.debug(`${symbol} 筹码峰计算完成: 1H POC=${profile1h?.poc?.toFixed(1) || 'N/A'}, 1D POC=${profile1d?.poc?.toFixed(1) || 'N/A'}`);
+      } catch (error) {
+        logger.warn(`${symbol} 筹码峰计算失败:`, error as any);
+        marketData[symbol].volumeProfile = null;
+      }
+
+      // === FOMO 缺口检测（5m K线，最近20根） ===
+      const fomoGaps: { type: string; from: number; to: number; size: number; high: number; low: number }[] = [];
+      if (candles5m && candles5m.length >= 2) {
+        for (let i = 1; i < candles5m.length; i++) {
+          const prevHigh = Number.parseFloat(candles5m[i - 1].high || "0");
+          const prevLow = Number.parseFloat(candles5m[i - 1].low || "0");
+          const currLow = Number.parseFloat(candles5m[i].low || "0");
+          const currHigh = Number.parseFloat(candles5m[i].high || "0");
+          
+          if (!Number.isFinite(prevHigh) || !Number.isFinite(currLow) || !Number.isFinite(prevLow) || !Number.isFinite(currHigh)) continue;
+          
+          // 跳空上涨: FOMO缺口
+          if (currLow > prevHigh) {
+            const gapSize = ((currLow - prevHigh) / prevHigh * 100);
+            fomoGaps.push({ type: "fomo_up", from: prevHigh, to: currLow, size: gapSize, high: currHigh, low: currLow });
+          }
+          // 跳空下跌: 恐慌缺口
+          else if (currHigh < prevLow) {
+            const gapSize = ((prevLow - currHigh) / prevLow * 100);
+            fomoGaps.push({ type: "panic_down", from: prevLow, to: currHigh, size: gapSize, high: currHigh, low: currLow });
+          }
+        }
+      }
+      
+      // 注入到 marketData 供 AI 决策使用
+      marketData[symbol].fomoGaps = fomoGaps;
+      if (fomoGaps.length > 0) {
+        logger.info(`${symbol} 检测到 ${fomoGaps.length} 个缺口: ${fomoGaps.map(g => g.type === 'fomo_up' ? `↑${g.size.toFixed(2)}%` : `↓${g.size.toFixed(2)}%`).join(', ')}`);
+      }
       
       // === 决策质量评分（聚焦1h和1d，斜率纳入趋势判断） ===
       const qualityScore = calculateQualityScore(
@@ -587,13 +664,13 @@ async function collectMarketData() {
           "1d": { price: indicators1d.currentPrice || 0, ema20: indicators1d.ema20 || 0, ema60: indicators1d.ema60 || 0, ema120: indicators1d.ema120 || 0, ma200: indicators1d.ma200 || 0, macd: indicators1d.macd || 0, rsi14: indicators1d.rsi14 || 50, volume: indicators1d.volume || 0, avgVolume: indicators1d.avgVolume || 0, slope20: indicators1d.slope20 || 0 },
         }
       );
-      logger.info(`${symbol} 质量评分: ${qualityScore.total}/100 [趋势:${qualityScore.trendResonance} 周期:${qualityScore.timeframeAlignment} 量价:${qualityScore.volumeConfirmation}]`);
+      logger.info(`${symbol} 质量评分: ${qualityScore.total}/100 [共振:${qualityScore.resonance} 周期:${qualityScore.alignment} 趋势:${qualityScore.trend} 量价:${qualityScore.volume} 位置:${qualityScore.position}]`);
 
-      // 保存技术指标到数据库（核心8指标 + 质量评分）
+      // 保存技术指标到数据库（核心8指标 + 质量评分 + 资金费率）
       await dbClient.execute({
         sql: `INSERT INTO trading_signals 
-              (symbol, timestamp, price, ema_20, ema_60, ema_120, ma_200, macd, rsi_14, rsi_7, volume, avg_volume, slope_20, quality_score, score_components) 
-              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              (symbol, timestamp, price, ema_20, ema_60, ema_120, ma_200, macd, rsi_14, rsi_7, volume, avg_volume, slope_20, quality_score, score_components, funding_rate) 
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         args: [
           symbol, dataTimestamp,
           ensureFinite(Number.parseFloat(ticker.last || "0"), 0),
@@ -608,7 +685,15 @@ async function collectMarketData() {
           ensureFinite(indicators.avgVolume),
           ensureFinite(indicators.slope20 || 0),
           qualityScore.total,
-          JSON.stringify({ resonance: qualityScore.trendResonance, alignment: qualityScore.timeframeAlignment, volume: qualityScore.volumeConfirmation }),
+          JSON.stringify({ 
+            resonance: qualityScore.resonance, 
+            alignment: qualityScore.alignment, 
+            trend: qualityScore.trend, 
+            volume: qualityScore.volume, 
+            position: qualityScore.position,
+            fomoGaps: fomoGaps.map(g => ({ type: g.type, from: g.from, to: g.to, size: g.size }))
+          }),
+          ensureFinite(fundingRate),
         ],
       });
     } catch (error) {

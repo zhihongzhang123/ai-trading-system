@@ -541,9 +541,12 @@ export class OkxClient {
     }
     
     try {
-      // 现货杠杆交易不需要 setPositionMode，移除合约专用调用
       // 确定订单方向
       const side = params.size > 0 ? "buy" : "sell";
+      
+      // OKX 双向持仓模式需要 posSide 参数
+      // 只做多策略：开仓(posSide="long", side="buy")，平仓(posSide="long", side="sell")
+      const posSide = params.reduceOnly ? "long" : "long";
       
       // OKX 订单类型
       let ordType = "market";
@@ -554,11 +557,12 @@ export class OkxClient {
         px = params.price.toString();
       }
       
-      // 构建订单参数（现货杠杆模式）
+      // 构建订单参数（合约模式 - 双向持仓）
       const order: any = {
         instId,
-        tdMode: "cross", // 现货杠杆-全仓模式
+        tdMode: "cross", // 全仓模式
         side,
+        posSide, // 双向持仓模式必需参数
         ordType,
         sz: Math.abs(params.size).toString(),
       };

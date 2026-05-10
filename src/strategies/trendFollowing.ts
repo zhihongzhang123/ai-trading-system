@@ -39,13 +39,13 @@ export function getTrendFollowingStrategy(maxLeverage: number): StrategyParams {
     },
 
     // ==================== 仓位配置 ====================
-    positionSizeMin: 10,
-    positionSizeMax: 25,
-    maxTotalMarginPercent: 50,
+    positionSizeMin: 15,
+    positionSizeMax: 40,
+    maxTotalMarginPercent: 60,
     positionSizeRecommend: {
-      normal: "10-15%（均线多头/空头排列确认）",
-      good: "15-20%（破底翻/顶底构造形态出现）",
-      strong: "20-25%（趋势五步骤完整+量价共振）",
+      normal: "15-20%（趋势确认）",
+      good: "20-30%（破底翻形态+量价共振）",
+      strong: "30-40%（教科书级破底翻+放量突破+多周期共振）",
     },
 
     // ==================== 止损配置 ====================
@@ -363,6 +363,8 @@ export function getTrendFollowingPrompt(params: StrategyParams, context: Strateg
 - 日线趋势 + 量价 + 情绪/筹码峰共振 = 最高置信度
 - 仅凭技术指标一致但情绪极度贪婪/消息面利好满天飞 → 谨慎，可能是顶部
 - 技术指标一般但情绪极度恐惧 + 底部放量 + 利空出尽 → 可能是绝佳进场点
+- **机会明确时敢于重仓**：趋势五步骤完整 + 量价共振 + 形态确认 → 仓位可提升至 30-40%
+- **不要永远最小仓位观望**：趋势确认后应果断提高仓位比例，让利润奔跑
 
 **严禁开仓的情况**：
 - 均线缠绕交错，无明显方向
